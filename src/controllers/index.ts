@@ -1,6 +1,7 @@
 import "./coastline-editor";
 import "./compare-prices";
 import "./elevation-profile";
+import "./landmass-draw";
 import "./market-deals-overview";
 import "./market-overview";
 import "./markets-overview";

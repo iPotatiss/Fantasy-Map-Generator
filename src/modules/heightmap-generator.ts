@@ -13,10 +13,21 @@ class HeightmapModule {
   heights: Uint8Array | null = null;
   blobPower: number = 0;
   linePower: number = 0;
+  allowedCells: Set<number> | null = null;
 
   private clearData() {
     this.heights = null;
     this.grid = null;
+    this.allowedCells = null;
+  }
+
+  // constrain tools to a cell subset (e.g. cells inside a user-drawn polygon); null = no constraint
+  setAllowedCells(cells: Set<number> | null) {
+    this.allowedCells = cells;
+  }
+
+  private isExcluded(cellId: number): boolean {
+    return this.allowedCells !== null && !this.allowedCells.has(cellId);
   }
 
   private getBlobPower(cells: number): number {
@@ -82,7 +93,7 @@ class HeightmapModule {
     this.grid = graph;
   }
 
-  addHill(count: string, height: string, rangeX: string, rangeY: string): void {
+  addHill(count: string, height: string, rangeX: string, rangeY: string, startCellId?: number): void {
     const addOneHill = () => {
       if (!this.heights || !this.grid) return;
       const change = new Uint8Array(this.heights.length);
@@ -90,20 +101,23 @@ class HeightmapModule {
       let start: number;
       const h = lim(getNumberInRange(height));
 
-      do {
-        const x = this.getPointInRange(rangeX, graphWidth);
-        const y = this.getPointInRange(rangeY, graphHeight);
-        if (x === undefined || y === undefined) return;
-        start = findGridCell(x, y, this.grid);
-        limit++;
-      } while (this.heights[start] + h > 90 && limit < 50);
+      if (startCellId !== undefined) start = startCellId;
+      else {
+        do {
+          const x = this.getPointInRange(rangeX, graphWidth);
+          const y = this.getPointInRange(rangeY, graphHeight);
+          if (x === undefined || y === undefined) return;
+          start = findGridCell(x, y, this.grid);
+          limit++;
+        } while ((this.isExcluded(start) || this.heights[start] + h > 90) && limit < 50);
+      }
       change[start] = h;
       const queue = [start];
       while (queue.length) {
         const q = queue.shift() as number;
 
         for (const c of this.grid.cells.c[q]) {
-          if (change[c]) continue;
+          if (change[c] || this.isExcluded(c)) continue;
           change[c] = change[q] ** this.blobPower * (Math.random() * 0.2 + 0.9);
           if (change[c] > 1) queue.push(c);
         }
@@ -132,7 +146,7 @@ class HeightmapModule {
         if (x === undefined || y === undefined) return;
         start = findGridCell(x, y, this.grid);
         limit++;
-      } while (this.heights[start] < 20 && limit < 50);
+      } while ((this.isExcluded(start) || this.heights[start] < 20) && limit < 50);
 
       const queue = [start];
       while (queue.length) {
@@ -141,7 +155,7 @@ class HeightmapModule {
         if (h < 1) return;
 
         this.grid.cells.c[q].forEach((c: number) => {
-          if (used[c] || this.heights === null) return;
+          if (used[c] || this.isExcluded(c) || this.heights === null) return;
           this.heights[c] = lim(this.heights[c] - h * (Math.random() * 0.2 + 0.9));
           used[c] = 1;
           queue.push(c);
@@ -177,7 +191,7 @@ class HeightmapModule {
         while (cur !== end) {
           let min = Infinity;
           this.grid.cells.c[cur].forEach((e: number) => {
-            if (used[e]) return;
+            if (used[e] || this.isExcluded(e)) return;
             let diff = (p[end][0] - p[e][0]) ** 2 + (p[end][1] - p[e][1]) ** 2;
             if (Math.random() > 0.85) diff = diff / 2;
             if (diff < min) {
@@ -234,7 +248,7 @@ class HeightmapModule {
         if (h < 2) break;
         frontier.forEach((f: number) => {
           this.grid.cells.c[f].forEach((i: number) => {
-            if (!used[i]) {
+            if (!used[i] && !this.isExcluded(i)) {
               queue.push(i);
               used[i] = 1;
             }
@@ -252,6 +266,7 @@ class HeightmapModule {
           );
           if (index === undefined) continue;
           const min = this.grid.cells.c[cur][index]; // downhill cell
+          if (this.isExcluded(min)) break;
           this.heights![min] = (this.heights![cur] * 2 + this.heights![min]) / 3;
           cur = min;
         }
@@ -284,7 +299,7 @@ class HeightmapModule {
         while (cur !== end) {
           let min = Infinity;
           this.grid.cells.c[cur].forEach((e: number) => {
-            if (used[e]) return;
+            if (used[e] || this.isExcluded(e)) return;
             let diff = (p[end][0] - p[e][0]) ** 2 + (p[end][1] - p[e][1]) ** 2;
             if (Math.random() > 0.8) diff = diff / 2;
             if (diff < min) {
@@ -345,7 +360,7 @@ class HeightmapModule {
         if (h < 2) break;
         frontier.forEach((f: number) => {
           this.grid.cells.c[f].forEach((i: number) => {
-            if (!used[i]) {
+            if (!used[i] && !this.isExcluded(i)) {
               queue.push(i);
               used[i] = 1;
             }
@@ -363,6 +378,7 @@ class HeightmapModule {
           );
           if (index === undefined) continue;
           const min = this.grid.cells.c[cur][index]; // downhill cell
+          if (this.isExcluded(min)) break;
           //debug.append("circle").attr("cx", p[min][0]).attr("cy", p[min][1]).attr("r", 1);
           this.heights![min] = (this.heights![cur] * 2 + this.heights![min]) / 3;
           cur = min;
@@ -440,8 +456,8 @@ class HeightmapModule {
     const max = range === "land" || range === "all" ? 100 : +range.split("-")[1];
     const isLand = min === 20;
 
-    this.heights = this.heights.map(h => {
-      if (h < min || h > max) return h;
+    this.heights = this.heights.map((h, i) => {
+      if (this.isExcluded(i) || h < min || h > max) return h;
 
       if (add) h = isLand ? Math.max(h + add, 20) : h + add;
       if (mult !== 1) h = isLand ? (h - 20) * mult + 20 : h * mult;
@@ -453,6 +469,7 @@ class HeightmapModule {
   smooth(fr = 2, add = 0): void {
     if (!this.heights || !this.grid) return;
     this.heights = this.heights.map((h, i) => {
+      if (this.isExcluded(i)) return h;
       const a = [h];
       this.grid.cells.c[i].forEach((c: number) => {
         a.push(this.heights![c]);

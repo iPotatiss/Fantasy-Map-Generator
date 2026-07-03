@@ -9,6 +9,9 @@ function editHeightmap(options) {
   if (!mode) showModeDialog();
   else enterHeightmapEditMode(mode);
 
+  // expose closure functions for TS controllers (e.g. LandmassDraw)
+  window.heightmapEditorContext = {updateHistory, mockHeightmap, mockHeightmapSelection};
+
   if (modules.editHeightmap) return;
   modules.editHeightmap = true;
 
