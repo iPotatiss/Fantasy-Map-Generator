@@ -30,6 +30,7 @@ function editCoastline() {
   ensureEl("coastlineGroupRemove").on("click", removeCoastlineGroup);
   ensureEl("coastlineGroupsHide").on("click", hideGroupSection);
   ensureEl("coastlineEditStyle").on("click", editGroupStyle);
+  ensureEl("coastlineApplyTerrain").on("click", () => window.CoastlineTerrain?.apply());
 
   function drawCoastlineVertices() {
     const featureId = +elSelected.attr("data-f");
@@ -56,7 +57,7 @@ function editCoastline() {
       .attr("cy", d => pack.vertices.p[d][1])
       .attr("r", 0.4)
       .attr("data-v", d => d)
-      .call(d3.drag().on("drag", handleVertexDrag).on("end", handleVertexDragEnd))
+      .call(d3.drag().on("start", handleVertexDragStart).on("drag", handleVertexDrag).on("end", handleVertexDragEnd))
       .on("mousemove", () =>
         tip("Drag to move the vertex. Please use for fine-tuning only. Edit heightmap to change actual cell heights!")
       );
@@ -64,11 +65,28 @@ function editCoastline() {
     coastlineArea.innerHTML = si(getArea(area)) + " " + getAreaUnit();
   }
 
+  // remember where the vertex started so the drag can be distance-clamped
+  function handleVertexDragStart() {
+    this.__ox = +this.getAttribute("cx");
+    this.__oy = +this.getAttribute("cy");
+  }
+
   function handleVertexDrag() {
     const {vertices, features} = pack;
 
-    const x = rn(d3.event.x, 2);
-    const y = rn(d3.event.y, 2);
+    // clamp the drag so a vertex cannot cross its neighbours (self-intersecting cell polygons)
+    const maxDist = grid.spacing * 1.2;
+    const ox = this.__ox ?? +this.getAttribute("cx");
+    const oy = this.__oy ?? +this.getAttribute("cy");
+    let dx = d3.event.x - ox;
+    let dy = d3.event.y - oy;
+    const dist = Math.hypot(dx, dy);
+    if (dist > maxDist) {
+      dx = (dx / dist) * maxDist;
+      dy = (dy / dist) * maxDist;
+    }
+    const x = rn(ox + dx, 2);
+    const y = rn(oy + dy, 2);
     this.setAttribute("cx", x);
     this.setAttribute("cy", y);
 

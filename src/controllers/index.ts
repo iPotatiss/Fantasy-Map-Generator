@@ -1,4 +1,5 @@
 import "./coastline-editor";
+import "./coastline-terrain";
 import "./compare-prices";
 import "./elevation-profile";
 import "./landmass-draw";

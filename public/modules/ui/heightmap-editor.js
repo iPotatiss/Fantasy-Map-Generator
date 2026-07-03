@@ -1,5 +1,224 @@
 "use strict";
 
+// Rebuild pack data from edited grid heights, preserving as much as possible.
+// Hoisted from editHeightmap() to module scope so the coastline reshape tool can
+// reuse the Risk-mode restore outside the heightmap editor. References only globals.
+function restoreRiskedData() {
+  INFO && console.group("Edit Heightmap");
+  TIME && console.time("restoreRiskedData");
+  const erosionAllowed = allowErosion.checked;
+
+  // assign pack data to grid cells
+  const l = grid.cells.i.length;
+  const biome = new Uint8Array(l);
+  const pop = new Uint16Array(l);
+  const routes = {};
+  const s = new Uint16Array(l);
+  const burg = new Uint16Array(l);
+  const state = new Uint16Array(l);
+  const province = new Uint16Array(l);
+  const culture = new Uint16Array(l);
+  const religion = new Uint16Array(l);
+
+  // rivers data, stored only if allowErosion is unchecked
+  const fl = new Uint16Array(l);
+  const r = new Uint16Array(l);
+  const conf = new Uint8Array(l);
+
+  for (const i of pack.cells.i) {
+    const g = pack.cells.g[i];
+    biome[g] = pack.cells.biome[i];
+    culture[g] = pack.cells.culture[i];
+    pop[g] = pack.cells.pop[i];
+    routes[g] = pack.cells.routes[i];
+    s[g] = pack.cells.s[i];
+    state[g] = pack.cells.state[i];
+    province[g] = pack.cells.province[i];
+    burg[g] = pack.cells.burg[i];
+    religion[g] = pack.cells.religion[i];
+
+    if (!erosionAllowed) {
+      fl[g] = pack.cells.fl[i];
+      r[g] = pack.cells.r[i];
+      conf[g] = pack.cells.conf[i];
+    }
+  }
+
+  // do not allow to remove land with burgs
+  for (const i of grid.cells.i) {
+    if (!burg[i]) continue;
+    if (grid.cells.h[i] < 20) grid.cells.h[i] = 20;
+  }
+
+  // save culture centers x and y to restore center cell id after re-graph
+  for (const c of pack.cultures) {
+    if (!c.i || c.removed) continue;
+    const p = pack.cells.p[c.center];
+    c.x = p[0];
+    c.y = p[1];
+  }
+
+  // save zone grid cells to restore them later
+  const zoneGridCellsMap = new Map();
+  for (const zone of pack.zones) {
+    if (!zone.cells?.length) continue;
+    const zoneGridCells = zone.cells.map(i => pack.cells.g[i]);
+    zoneGridCellsMap.set(zone.i, unique(zoneGridCells));
+  }
+
+  Features.markupGrid();
+  if (erosionAllowed) addLakesInDeepDepressions();
+  OceanLayers();
+  calculateTemperatures();
+  generatePrecipitation();
+  reGraph();
+  Features.markupPack();
+
+  if (erosionAllowed) {
+    Rivers.generate(true);
+    Features.defineGroups();
+  }
+
+  // assign saved pack data from grid back to pack
+  const n = pack.cells.i.length;
+  pack.cells.pop = new Float32Array(n);
+  pack.cells.routes = {};
+  pack.cells.s = new Uint16Array(n);
+  pack.cells.burg = new Uint16Array(n);
+  pack.cells.state = new Uint16Array(n);
+  pack.cells.province = new Uint16Array(n);
+  pack.cells.culture = new Uint16Array(n);
+  pack.cells.religion = new Uint16Array(n);
+  pack.cells.biome = new Uint8Array(n);
+
+  if (!erosionAllowed) {
+    pack.cells.r = new Uint16Array(n);
+    pack.cells.conf = new Uint8Array(n);
+    pack.cells.fl = new Uint16Array(n);
+  }
+
+  for (const i of pack.cells.i) {
+    const g = pack.cells.g[i];
+    const isLand = pack.cells.h[i] >= 20;
+
+    // rivers data
+    if (!erosionAllowed) {
+      pack.cells.r[i] = r[g];
+      pack.cells.conf[i] = conf[g];
+      pack.cells.fl[i] = fl[g];
+    }
+
+    // check biome
+    pack.cells.biome[i] =
+      isLand && biome[g]
+        ? biome[g]
+        : Biomes.getId(grid.cells.prec[g], grid.cells.temp[g], pack.cells.h[i], Boolean(pack.cells.r[i]));
+
+    if (!isLand) continue;
+    pack.cells.culture[i] = culture[g];
+    pack.cells.pop[i] = pop[g];
+    pack.cells.routes[i] = routes[g];
+    pack.cells.s[i] = s[g];
+    pack.cells.state[i] = state[g];
+    pack.cells.province[i] = province[g];
+    pack.cells.religion[i] = religion[g];
+  }
+
+  // find closest land cell to burg
+  const findBurgCell = function (x, y) {
+    let i = findCell(x, y);
+    if (pack.cells.h[i] >= 20) return i;
+    const dist = pack.cells.c[i].map(c =>
+      pack.cells.h[c] < 20 ? Infinity : (pack.cells.p[c][0] - x) ** 2 + (pack.cells.p[c][1] - y) ** 2
+    );
+    return pack.cells.c[i][d3.scan(dist)];
+  };
+
+  // find best cell for burgs
+  for (const b of pack.burgs) {
+    if (!b.i || b.removed) continue;
+    b.cell = findBurgCell(b.x, b.y);
+    b.feature = pack.cells.f[b.cell];
+
+    pack.cells.burg[b.cell] = b.i;
+    if (!b.capital && pack.cells.h[b.cell] < 20) Burgs.remove(b.i);
+    if (b.capital) pack.states[b.state].center = b.cell;
+  }
+
+  for (const p of pack.provinces) {
+    if (!p.i || p.removed) continue;
+    const provCells = pack.cells.i.filter(i => pack.cells.province[i] === p.i);
+    if (!provCells.length) {
+      const state = p.state;
+      const stateProvs = pack.states[state].provinces;
+      if (stateProvs.includes(p.i)) pack.states[state].provinces.splice(stateProvs.indexOf(p), 1);
+
+      p.removed = true;
+      continue;
+    }
+
+    if (p.burg && !pack.burgs[p.burg].removed) p.center = pack.burgs[p.burg].cell;
+    else {
+      p.center = provCells[0];
+      p.burg = pack.cells.burg[p.center];
+    }
+  }
+
+  for (const c of pack.cultures) {
+    if (!c.i || c.removed) continue;
+    c.center = findCell(c.x, c.y);
+  }
+
+  if (erosionAllowed) {
+    Rivers.specify();
+    Lakes.defineNames();
+  }
+
+  const gridToPackMap = new Map();
+  for (const i of pack.cells.i) {
+    const g = pack.cells.g[i];
+    if (!gridToPackMap.has(g)) gridToPackMap.set(g, []);
+    gridToPackMap.get(g).push(i);
+  }
+
+  // restore zone cells
+  for (const zone of pack.zones) {
+    const gridCells = zoneGridCellsMap.get(zone.i);
+    if (gridCells?.length) {
+      const packCells = gridCells.flatMap(g => gridToPackMap.get(g) || []);
+      zone.cells = unique(packCells);
+    } else {
+      zone.cells = [];
+    }
+  }
+
+  // TODO: restore economy, see resample.ts
+  Goods.generate();
+  Markets.generate();
+  Production.produce();
+  States.collectTaxes();
+
+  // recalculate ice
+  Ice.generate();
+  ice.selectAll("*").remove();
+
+  TIME && console.timeEnd("restoreRiskedData");
+  INFO && console.groupEnd("Edit Heightmap");
+}
+
+// Commit a coastline reshape: the caller has already reclassified grid.cells.h
+// across the sea level threshold; rebuild pack data (Risk-mode restore) and redraw
+// every active layer so rivers/biomes/states stay consistent. Rivers/data are
+// preserved (erosion off) and mapped onto the reshaped coast.
+window.commitCoastlineReshape = function () {
+  const box = document.getElementById("allowErosion");
+  const prev = box ? box.checked : false;
+  if (box) box.checked = false;
+  restoreRiskedData();
+  if (box) box.checked = prev;
+  drawLayers();
+};
+
 function editHeightmap(options) {
   const { mode, tool } = options || {};
   restartHistory();
@@ -293,208 +512,8 @@ function editHeightmap(options) {
     }
   }
 
-  function restoreRiskedData() {
-    INFO && console.group("Edit Heightmap");
-    TIME && console.time("restoreRiskedData");
-    const erosionAllowed = allowErosion.checked;
-
-    // assign pack data to grid cells
-    const l = grid.cells.i.length;
-    const biome = new Uint8Array(l);
-    const pop = new Uint16Array(l);
-    const routes = {};
-    const s = new Uint16Array(l);
-    const burg = new Uint16Array(l);
-    const state = new Uint16Array(l);
-    const province = new Uint16Array(l);
-    const culture = new Uint16Array(l);
-    const religion = new Uint16Array(l);
-
-    // rivers data, stored only if allowErosion is unchecked
-    const fl = new Uint16Array(l);
-    const r = new Uint16Array(l);
-    const conf = new Uint8Array(l);
-
-    for (const i of pack.cells.i) {
-      const g = pack.cells.g[i];
-      biome[g] = pack.cells.biome[i];
-      culture[g] = pack.cells.culture[i];
-      pop[g] = pack.cells.pop[i];
-      routes[g] = pack.cells.routes[i];
-      s[g] = pack.cells.s[i];
-      state[g] = pack.cells.state[i];
-      province[g] = pack.cells.province[i];
-      burg[g] = pack.cells.burg[i];
-      religion[g] = pack.cells.religion[i];
-
-      if (!erosionAllowed) {
-        fl[g] = pack.cells.fl[i];
-        r[g] = pack.cells.r[i];
-        conf[g] = pack.cells.conf[i];
-      }
-    }
-
-    // do not allow to remove land with burgs
-    for (const i of grid.cells.i) {
-      if (!burg[i]) continue;
-      if (grid.cells.h[i] < 20) grid.cells.h[i] = 20;
-    }
-
-    // save culture centers x and y to restore center cell id after re-graph
-    for (const c of pack.cultures) {
-      if (!c.i || c.removed) continue;
-      const p = pack.cells.p[c.center];
-      c.x = p[0];
-      c.y = p[1];
-    }
-
-    // save zone grid cells to restore them later
-    const zoneGridCellsMap = new Map();
-    for (const zone of pack.zones) {
-      if (!zone.cells?.length) continue;
-      const zoneGridCells = zone.cells.map(i => pack.cells.g[i]);
-      zoneGridCellsMap.set(zone.i, unique(zoneGridCells));
-    }
-
-    Features.markupGrid();
-    if (erosionAllowed) addLakesInDeepDepressions();
-    OceanLayers();
-    calculateTemperatures();
-    generatePrecipitation();
-    reGraph();
-    Features.markupPack();
-
-    if (erosionAllowed) {
-      Rivers.generate(true);
-      Features.defineGroups();
-    }
-
-    // assign saved pack data from grid back to pack
-    const n = pack.cells.i.length;
-    pack.cells.pop = new Float32Array(n);
-    pack.cells.routes = {};
-    pack.cells.s = new Uint16Array(n);
-    pack.cells.burg = new Uint16Array(n);
-    pack.cells.state = new Uint16Array(n);
-    pack.cells.province = new Uint16Array(n);
-    pack.cells.culture = new Uint16Array(n);
-    pack.cells.religion = new Uint16Array(n);
-    pack.cells.biome = new Uint8Array(n);
-
-    if (!erosionAllowed) {
-      pack.cells.r = new Uint16Array(n);
-      pack.cells.conf = new Uint8Array(n);
-      pack.cells.fl = new Uint16Array(n);
-    }
-
-    for (const i of pack.cells.i) {
-      const g = pack.cells.g[i];
-      const isLand = pack.cells.h[i] >= 20;
-
-      // rivers data
-      if (!erosionAllowed) {
-        pack.cells.r[i] = r[g];
-        pack.cells.conf[i] = conf[g];
-        pack.cells.fl[i] = fl[g];
-      }
-
-      // check biome
-      pack.cells.biome[i] =
-        isLand && biome[g]
-          ? biome[g]
-          : Biomes.getId(grid.cells.prec[g], grid.cells.temp[g], pack.cells.h[i], Boolean(pack.cells.r[i]));
-
-      if (!isLand) continue;
-      pack.cells.culture[i] = culture[g];
-      pack.cells.pop[i] = pop[g];
-      pack.cells.routes[i] = routes[g];
-      pack.cells.s[i] = s[g];
-      pack.cells.state[i] = state[g];
-      pack.cells.province[i] = province[g];
-      pack.cells.religion[i] = religion[g];
-    }
-
-    // find closest land cell to burg
-    const findBurgCell = function (x, y) {
-      let i = findCell(x, y);
-      if (pack.cells.h[i] >= 20) return i;
-      const dist = pack.cells.c[i].map(c =>
-        pack.cells.h[c] < 20 ? Infinity : (pack.cells.p[c][0] - x) ** 2 + (pack.cells.p[c][1] - y) ** 2
-      );
-      return pack.cells.c[i][d3.scan(dist)];
-    };
-
-    // find best cell for burgs
-    for (const b of pack.burgs) {
-      if (!b.i || b.removed) continue;
-      b.cell = findBurgCell(b.x, b.y);
-      b.feature = pack.cells.f[b.cell];
-
-      pack.cells.burg[b.cell] = b.i;
-      if (!b.capital && pack.cells.h[b.cell] < 20) Burgs.remove(b.i);
-      if (b.capital) pack.states[b.state].center = b.cell;
-    }
-
-    for (const p of pack.provinces) {
-      if (!p.i || p.removed) continue;
-      const provCells = pack.cells.i.filter(i => pack.cells.province[i] === p.i);
-      if (!provCells.length) {
-        const state = p.state;
-        const stateProvs = pack.states[state].provinces;
-        if (stateProvs.includes(p.i)) pack.states[state].provinces.splice(stateProvs.indexOf(p), 1);
-
-        p.removed = true;
-        continue;
-      }
-
-      if (p.burg && !pack.burgs[p.burg].removed) p.center = pack.burgs[p.burg].cell;
-      else {
-        p.center = provCells[0];
-        p.burg = pack.cells.burg[p.center];
-      }
-    }
-
-    for (const c of pack.cultures) {
-      if (!c.i || c.removed) continue;
-      c.center = findCell(c.x, c.y);
-    }
-
-    if (erosionAllowed) {
-      Rivers.specify();
-      Lakes.defineNames();
-    }
-
-    const gridToPackMap = new Map();
-    for (const i of pack.cells.i) {
-      const g = pack.cells.g[i];
-      if (!gridToPackMap.has(g)) gridToPackMap.set(g, []);
-      gridToPackMap.get(g).push(i);
-    }
-
-    // restore zone cells
-    for (const zone of pack.zones) {
-      const gridCells = zoneGridCellsMap.get(zone.i);
-      if (gridCells?.length) {
-        const packCells = gridCells.flatMap(g => gridToPackMap.get(g) || []);
-        zone.cells = unique(packCells);
-      } else {
-        zone.cells = [];
-      }
-    }
-
-    // TODO: restore economy, see resample.ts
-    Goods.generate();
-    Markets.generate();
-    Production.produce();
-    States.collectTaxes();
-
-    // recalculate ice
-    Ice.generate();
-    ice.selectAll("*").remove();
-
-    TIME && console.timeEnd("restoreRiskedData");
-    INFO && console.groupEnd("Edit Heightmap");
-  }
+  // restoreRiskedData is defined at module scope (hoisted so the coastline
+  // reshape tool can reuse the Risk-mode restore outside the heightmap editor)
 
   // trigger heightmap redraw and history update if at least 1 cell is changed
   function updateHeightmap() {
