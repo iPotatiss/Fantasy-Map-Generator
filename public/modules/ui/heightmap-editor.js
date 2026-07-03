@@ -341,6 +341,7 @@ function editHeightmap(options) {
 
     if (tool === "templateEditor") openTemplateEditor();
     else if (tool === "imageConverter") openImageConverter();
+    else if (tool === "landmass") window.LandmassDraw?.toggle(); // launched from the drawing toolbox
     else openBrushesPanel();
   }
 
