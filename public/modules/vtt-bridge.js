@@ -33,6 +33,98 @@
     return isFinite(x) ? x : 0;
   }
 
+  // Convert a same-origin blob: URL to a persistent data: URL (cross-origin safe).
+  function blobUrlToDataUrl(blobUrl) {
+    return fetch(blobUrl)
+      .then(function (r) {
+        return r.blob();
+      })
+      .then(function (b) {
+        return new Promise(function (res, rej) {
+          var fr = new FileReader();
+          fr.onloadend = function () {
+            res(fr.result);
+          };
+          fr.onerror = rej;
+          fr.readAsDataURL(b);
+        });
+      });
+  }
+
+  // Produce FMG's finished styled render as a data URL: crisp self-contained SVG
+  // (Flat) or a rasterized PNG (Globe texture). getMapURL("svg",{fullMap:true})
+  // renders the whole graphWidth x graphHeight extent with fonts/patterns/filters
+  // inlined, so it is safe to load cross-origin. Never emits a blob: URL.
+  function buildImage(format, scale, cb) {
+    if (typeof getMapURL !== "function") {
+      cb(null, "no getMapURL");
+      return;
+    }
+    var W = (typeof graphWidth !== "undefined" ? +graphWidth : 0) || 0;
+    var H = (typeof graphHeight !== "undefined" ? +graphHeight : 0) || 0;
+    var done = false;
+    function fail(msg) {
+      if (!done) {
+        done = true;
+        cb(null, msg, W, H);
+      }
+    }
+    function ok(dataUrl) {
+      if (!done) {
+        done = true;
+        cb(dataUrl, null, W, H);
+      }
+    }
+    var p;
+    try {
+      p = getMapURL("svg", { fullMap: true });
+    } catch (e) {
+      fail("getMapURL threw: " + (e && e.message));
+      return;
+    }
+    if (!p || typeof p.then !== "function") {
+      fail("getMapURL did not return a promise");
+      return;
+    }
+    p.then(function (blobUrl) {
+      if (format === "png") {
+        // Rasterize the self-contained SVG to a PNG data URL. The PNG is sized to the
+        // map's pixel extent (W x H, scaled) so it aligns 1:1 with bundle.width/height.
+        var img = new Image();
+        img.onload = function () {
+          try {
+            var s = scale || 1;
+            var c = document.createElement("canvas");
+            c.width = Math.max(1, Math.round(W * s));
+            c.height = Math.max(1, Math.round(H * s));
+            c.getContext("2d").drawImage(img, 0, 0, c.width, c.height);
+            ok(c.toDataURL("image/png")); // same-origin (base64 images) → no taint
+          } catch (e) {
+            fail("rasterize failed: " + (e && e.message));
+          }
+        };
+        img.onerror = function () {
+          fail("svg image load failed");
+        };
+        blobUrlToDataUrl(blobUrl)
+          .then(function (svgDataUrl) {
+            img.src = svgDataUrl;
+          })
+          .catch(function () {
+            img.src = blobUrl; // same-origin blob loads into an Image fine
+          });
+      } else {
+        blobUrlToDataUrl(blobUrl)
+          .then(ok)
+          .catch(function (e) {
+            fail("svg dataurl failed: " + (e && e.message));
+          });
+      }
+    }).catch(function (e) {
+      fail("getMapURL failed: " + (e && e.message));
+    });
+  }
+
   function buildPayload() {
     if (typeof pack === "undefined" || !pack || !pack.cells || !pack.cells.v) return null;
     var c = pack.cells;
@@ -157,9 +249,25 @@
 
   function onRequest(ev) {
     var d = ev && ev.data;
-    if (!d || d.type !== "FMG_REQUEST_EXPORT") return;
+    if (!d || (d.type !== "FMG_REQUEST_EXPORT" && d.type !== "FMG_REQUEST_IMAGE")) return;
     var target = ev.source || window.parent;
     var origin = ev.origin && ev.origin !== "null" ? ev.origin : "*";
+
+    if (d.type === "FMG_REQUEST_IMAGE") {
+      var fmt = d.format === "png" ? "png" : "svg";
+      buildImage(fmt, +d.scale || 1, function (dataUrl, err, W, H) {
+        reply(target, origin, {
+          type: "FMG_IMAGE",
+          format: fmt,
+          dataUrl: dataUrl,
+          width: W,
+          height: H,
+          error: err || undefined
+        });
+      });
+      return;
+    }
+
     var payload;
     try {
       payload = buildPayload();
@@ -192,5 +300,5 @@
   window.addEventListener("load", announce, false); // a second announce is harmless
 
   // Expose for in-page testing / a future toolbar action.
-  window.VttBridge = { buildPayload: buildPayload };
+  window.VttBridge = { buildPayload: buildPayload, buildImage: buildImage };
 })();
