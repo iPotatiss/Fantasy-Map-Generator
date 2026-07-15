@@ -986,7 +986,8 @@ function enterStandardView() {
 }
 
 async function enter3dView(type) {
-  const canvas = document.createElement("canvas");
+  const isVectorGlobe = type === "viewGlobe";
+  const canvas = document.createElement(isVectorGlobe ? "div" : "canvas");
   canvas.id = "canvas3d";
   canvas.dataset.type = type;
 
@@ -995,14 +996,23 @@ async function enter3dView(type) {
     canvas.height = canvas.width / (graphWidth / graphHeight);
     canvas.style.display = "block";
   } else {
-    canvas.width = svgWidth;
-    canvas.height = svgHeight;
+    if (!isVectorGlobe) {
+      canvas.width = svgWidth;
+      canvas.height = svgHeight;
+    }
     canvas.style.position = "absolute";
-    canvas.style.display = "none";
+    canvas.style.display = isVectorGlobe ? "block" : "none";
   }
 
+  // The vector map needs a connected, measurable container before its WebGL
+  // renderer can start. Other 3D modes keep their existing delayed insertion.
+  if (isVectorGlobe) document.body.insertBefore(canvas, optionsContainer);
   const started = await ThreeD.create(canvas, type);
-  if (!started) return;
+  if (!started) {
+    canvas.remove();
+    tip("The vector globe could not start on this browser", false, "error", 4000);
+    return;
+  }
 
   canvas.style.display = "block";
   canvas.onmouseenter = () => {
@@ -1010,7 +1020,11 @@ async function enter3dView(type) {
       canvas.dataset.type === "viewGlobe"
         ? "Drag to rotate • Scroll to zoom • Click a burg or marker to edit • <b>O</b> for options"
         : "Drag to pan • Scroll to zoom • Right-click drag to rotate • <b>O</b> to toggle options";
-    +canvas.dataset.hovered > 2 ? tip("") : tip(help);
+    const contextualHelp =
+      canvas.dataset.type === "viewGlobe"
+        ? "Drag to explore | Scroll to zoom | Deep-zoom and click a settlement for its bird's-eye map"
+        : help;
+    +canvas.dataset.hovered > 2 ? tip("") : tip(contextualHelp);
     canvas.dataset.hovered = (+canvas.dataset.hovered | 0) + 1;
   };
 
@@ -1023,7 +1037,7 @@ async function enter3dView(type) {
       resizeStop: resize3d,
       close: enterStandardView
     });
-  } else document.body.insertBefore(canvas, optionsContainer);
+  } else if (!isVectorGlobe) document.body.insertBefore(canvas, optionsContainer);
 
   // Globe is primarily a viewing and inspection surface. Keep editing tools
   // and technical settings out of the way; O still opens the settings.

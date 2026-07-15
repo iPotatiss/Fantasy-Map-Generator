@@ -9,6 +9,23 @@ import {
 import { minmax, rn, throttle } from "../utils";
 import { getRegionalDetailXSegments, unwrapRegionalDetailX } from "./globe-regional-detail";
 
+type VectorGlobeModule = typeof import("./vector-globe");
+let vectorGlobeModule: VectorGlobeModule | null = null;
+let vectorGlobeLoadPromise: Promise<VectorGlobeModule> | null = null;
+const loadVectorGlobe = () =>
+  (vectorGlobeLoadPromise ??= import("./vector-globe").then(module => (vectorGlobeModule = module)));
+const isVectorGlobeActive = () => vectorGlobeModule?.isVectorGlobeActive() || false;
+const isVectorGlobeReady = () => vectorGlobeModule?.isVectorGlobeReady() || false;
+const createVectorGlobe = async (container: HTMLElement) => (await loadVectorGlobe()).createVectorGlobe(container);
+const stopVectorGlobe = () => vectorGlobeModule?.stopVectorGlobe();
+const updateVectorGlobe = () => vectorGlobeModule?.updateVectorGlobe();
+const resizeVectorGlobe = () => vectorGlobeModule?.resizeVectorGlobe();
+const setVectorGlobeProjection = (projection: GlobeProjection) =>
+  vectorGlobeModule?.setVectorGlobeProjection(projection);
+const projectVectorMapPointToScreen = (x: number, y: number) =>
+  vectorGlobeModule?.projectVectorMapPointToScreen(x, y) || null;
+const getVectorGlobeDiagnostics = () => vectorGlobeModule?.getVectorGlobeDiagnostics();
+
 let Three!: typeof import("three");
 let threeLoadPromise: Promise<boolean> | null = null;
 
@@ -262,14 +279,35 @@ const GLOBE_REGIONAL_DETAIL_EDGE_FADE = 0.035;
 const context2d = document.createElement("canvas").getContext("2d")!;
 
 // initiate 3d scene
-const create = async (canvas: HTMLCanvasElement, type = "viewMesh") => {
+const create = async (container: HTMLElement, type = "viewMesh") => {
   options.isOn = true;
   options.isGlobe = type === "viewGlobe";
-  return options.isGlobe ? newGlobe(canvas) : newMesh(canvas);
+  if (options.isGlobe) {
+    const started = await createVectorGlobe(container);
+    if (started) return true;
+
+    // Keep a safe legacy fallback for browsers where MapLibre cannot acquire
+    // a WebGL context. Modern browsers use the vector renderer above.
+    stopVectorGlobe();
+    const fallbackCanvas = document.createElement("canvas");
+    fallbackCanvas.width = svgWidth;
+    fallbackCanvas.height = svgHeight;
+    fallbackCanvas.style.width = "100%";
+    fallbackCanvas.style.height = "100%";
+    container.append(fallbackCanvas);
+    return newGlobe(fallbackCanvas);
+  }
+  if (!(container instanceof HTMLCanvasElement)) return false;
+  return newMesh(container);
 };
 
 // redraw 3d scene
 const redraw = () => {
+  if (isVectorGlobeActive()) {
+    updateVectorGlobe();
+    resizeVectorGlobe();
+    return;
+  }
   deleteLabels();
   if (options.isGlobe) {
     deleteGlobeOverlays();
@@ -286,12 +324,19 @@ const redraw = () => {
 
 // update 3d texture
 const update = () => {
-  if (options.isGlobe) updateGlobeTexure();
+  if (isVectorGlobeActive()) updateVectorGlobe();
+  else if (options.isGlobe) updateGlobeTexure();
   else update3dTexture();
 };
 
 // try to clean the memory as much as possible
 const stop = () => {
+  if (isVectorGlobeActive()) {
+    stopVectorGlobe();
+    options.isOn = false;
+    options.isGlobe = false;
+    return;
+  }
   detachGlobePicking?.();
   detachGlobePicking = null;
   detachGlobeResize?.();
@@ -457,6 +502,11 @@ const setResolutionScale = (scale: number) => {
 
 const setGlobeProjection = (projection: GlobeProjection) => {
   if (projection !== "geographic" && projection !== "world") return;
+  if (isVectorGlobeActive()) {
+    options.globeProjection = projection;
+    setVectorGlobeProjection(projection);
+    return;
+  }
   if (options.globeProjection === projection) return;
 
   options.globeProjection = projection;
@@ -3013,37 +3063,44 @@ function ensureGlobe3dMesh() {
   return globeMesh;
 }
 
-const getGlobeMeshCount = () => scene?.children.filter(child => child.userData.fmgGlobeMesh).length ?? 0;
+const getGlobeMeshCount = () =>
+  isVectorGlobeActive() ? 0 : (scene?.children.filter(child => child.userData.fmgGlobeMesh).length ?? 0);
 
 const isGlobeReady = () =>
-  Boolean(
-    options.isOn &&
-      options.isGlobe &&
-      globeTextureRevision > 0 &&
-      globeTextureCommittedRevision === globeTextureRevision &&
-      globeTextureCommittedQuality > 0 &&
-      globeTexturePlacement &&
-      texture &&
-      material?.map === texture &&
-      globeMesh?.parent === scene &&
-      getGlobeMeshCount() === 1
-  );
+  isVectorGlobeActive()
+    ? isVectorGlobeReady()
+    : Boolean(
+        options.isOn &&
+          options.isGlobe &&
+          globeTextureRevision > 0 &&
+          globeTextureCommittedRevision === globeTextureRevision &&
+          globeTextureCommittedQuality > 0 &&
+          globeTexturePlacement &&
+          texture &&
+          material?.map === texture &&
+          globeMesh?.parent === scene &&
+          getGlobeMeshCount() === 1
+      );
 
 const isGlobeSettled = () =>
-  Boolean(
-    isGlobeReady() &&
-      (globeTexturePlacement?.textureWidth === getGlobeTargetTextureWidth() || globeTextureUpgradeFailed) &&
-      !globePendingUpgrade &&
-      !cancelGlobeUpgradeSchedule
-  );
+  isVectorGlobeActive()
+    ? isVectorGlobeReady()
+    : Boolean(
+        isGlobeReady() &&
+          (globeTexturePlacement?.textureWidth === getGlobeTargetTextureWidth() || globeTextureUpgradeFailed) &&
+          !globePendingUpgrade &&
+          !cancelGlobeUpgradeSchedule
+      );
 
 const isGlobeRegionalDetailReady = () =>
-  Boolean(
-    globeRegionalDetailMesh?.visible &&
-      globeRegionalDetailTexture &&
-      globeRegionalDetailCommittedRevision === globeRegionalDetailRevision &&
-      !globeInteractionActive
-  );
+  isVectorGlobeActive()
+    ? false
+    : Boolean(
+        globeRegionalDetailMesh?.visible &&
+          globeRegionalDetailTexture &&
+          globeRegionalDetailCommittedRevision === globeRegionalDetailRevision &&
+          !globeInteractionActive
+      );
 
 // render 3d scene and camera, do only on controls change
 const renderThrottled = throttle(doWorkOnRender, 200);
@@ -3234,11 +3291,13 @@ function OBJExporter(): any {
 }
 
 const projectGlobeMapPointToScreen = (x: number, y: number) => {
+  if (isVectorGlobeActive()) return projectVectorMapPointToScreen(x, y);
   if (!Renderer) return null;
   return projectMapPointToScreen(x, y, Renderer.domElement.getBoundingClientRect());
 };
 
 const getGlobeRenderDiagnostics = () => {
+  if (isVectorGlobeActive()) return getVectorGlobeDiagnostics();
   const qualityProfile = getGlobeQualityProfile();
   const overlayCounts = globeOverlays.reduce<Record<GlobeOverlayKind, number>>(
     (counts, overlay) => {
