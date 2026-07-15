@@ -76,10 +76,43 @@ test.describe("3D globe lifecycle", () => {
     });
     test.skip(!hasWebGL, "WebGL is not available in this environment");
 
-    await page.evaluate(() => (window as any).enter3dView("viewGlobe"));
+    await page.evaluate(() => {
+      const app = window as any;
+      if (!app.layerIsOn("toggleLabels")) document.getElementById("toggleLabels")?.click();
+      if (!app.layerIsOn("toggleBurgIcons")) document.getElementById("toggleBurgIcons")?.click();
+      app.ThreeD.setGlobeProjection("world");
+      return app.enter3dView("viewGlobe");
+    });
     await page.waitForSelector("#canvas3d", { state: "visible", timeout: 60_000 });
     await expect.poll(() => page.evaluate(() => (window as any).ThreeD.getGlobeMeshCount())).toBe(1);
     await expect.poll(() => page.evaluate(() => (window as any).ThreeD.isGlobeReady())).toBe(true);
+
+    const globeRendering = await page.evaluate(() => (window as any).ThreeD.getGlobeRenderDiagnostics());
+    expect(globeRendering).toMatchObject({
+      bakedLabels: false,
+      bakedPointSymbols: false,
+      bakedIce: false,
+      polarCapDegrees: 12,
+      polarBlendDegrees: 6,
+      zoomSpeed: 0.55
+    });
+    expect(globeRendering.committedQuality).toBeGreaterThanOrEqual(1);
+    expect(globeRendering.textureWidth).toBeLessThanOrEqual(globeRendering.targetTextureWidth);
+    expect(globeRendering.overlayCounts["state-label"]).toBeGreaterThan(0);
+    expect(globeRendering.overlayCounts["burg-icon"]).toBeGreaterThan(0);
+    expect(globeRendering.overlayCounts["state-label"]).toBeLessThanOrEqual(globeRendering.overlayLimits.states);
+    expect(globeRendering.overlayCounts["burg-icon"]).toBeLessThanOrEqual(globeRendering.overlayLimits.burgIcons);
+
+    await expect
+      .poll(() => page.evaluate(() => (window as any).ThreeD.isGlobeSettled()), { timeout: 60_000 })
+      .toBe(true);
+    const settledRendering = await page.evaluate(() => (window as any).ThreeD.getGlobeRenderDiagnostics());
+    expect(settledRendering.textureWidth).toBe(settledRendering.targetTextureWidth);
+    expect(settledRendering.textureHeight).toBe(settledRendering.textureWidth / 2);
+    expect(settledRendering.polarCapPixels).toBe(Math.round((12 / 180) * settledRendering.textureHeight));
+    expect(settledRendering.mapHeight).toBe(settledRendering.textureHeight - settledRendering.polarCapPixels * 2);
+    expect(settledRendering.rasterSourceWidth).toBe(settledRendering.mapWidth);
+    expect(settledRendering.rasterSourceHeight).toBe(settledRendering.mapHeight);
 
     await page.setViewportSize({ width: 1040, height: 760 });
     await expect
@@ -87,7 +120,7 @@ test.describe("3D globe lifecycle", () => {
         page.evaluate(() => {
           const canvas = document.getElementById("canvas3d") as HTMLCanvasElement;
           const rect = canvas.getBoundingClientRect();
-          const pixelRatio = Math.min(Math.max(window.devicePixelRatio || 1, 1), 2);
+          const pixelRatio = (window as any).ThreeD.getGlobeRenderDiagnostics().pixelRatio;
           return {
             fillsViewport:
               Math.abs(rect.width - document.documentElement.clientWidth) <= 1 &&
@@ -147,8 +180,9 @@ test.describe("3D globe lifecycle", () => {
     await page.waitForSelector("#canvas3d", { state: "visible", timeout: 60_000 });
     await expect.poll(() => page.evaluate(() => (window as any).ThreeD.isGlobeReady())).toBe(true);
 
-    // Resizing exercises both renderer and camera aspect updates. The manual
-    // projection below only lands on the real burg if both stay in sync.
+    // Resizing exercises renderer, camera and map-to-globe alignment. The
+    // projected point only opens the matching burg if the polar-cap offset is
+    // applied consistently in rendering, overlays and inverse picking.
     await page.setViewportSize({ width: 1100, height: 760 });
     await expect
       .poll(() => page.locator("#canvas3d").evaluate(canvas => Math.round(canvas.getBoundingClientRect().width)))
@@ -156,32 +190,23 @@ test.describe("3D globe lifecycle", () => {
 
     const burgPoint = await page.evaluate(() => {
       const app = window as any;
-
       const canvas = document.getElementById("canvas3d") as HTMLCanvasElement;
       const rect = canvas.getBoundingClientRect();
-      const aspect = canvas.width / canvas.height;
-      const perspectiveScale = 1 / Math.tan((45 * Math.PI) / 360);
-      let best: { id: number; name: string; x: number; y: number; z: number } | null = null;
+      let best: { id: number; name: string; x: number; y: number; distance: number } | null = null;
 
       for (const burg of app.pack.burgs) {
-        if (!burg?.i || burg.removed || !document.getElementById(`burg${burg.i}`)) continue;
+        if (!burg?.i || !burg.capital || burg.removed || !document.getElementById(`burg${burg.i}`)) continue;
+        if (burg.y < app.graphHeight * 0.06 || burg.y > app.graphHeight * 0.94) continue;
 
-        const theta = (burg.y / app.graphHeight) * Math.PI;
-        const phi = (burg.x / app.graphWidth) * Math.PI * 2;
-        const sinTheta = Math.sin(theta);
-        const worldX = -Math.cos(phi) * sinTheta;
-        const worldY = Math.cos(theta);
-        const worldZ = Math.sin(phi) * sinTheta;
-        if (worldZ <= 0.25) continue;
+        const point = app.ThreeD.projectGlobeMapPointToScreen(burg.x, burg.y);
+        if (!point) continue;
+        if (point.x < rect.left + 80 || point.x > rect.right - 80) continue;
+        if (point.y < rect.top + 80 || point.y > rect.bottom - 80) continue;
 
-        const cameraDepth = 5 - worldZ;
-        const ndcX = (worldX * perspectiveScale) / (aspect * cameraDepth);
-        const ndcY = (worldY * perspectiveScale) / cameraDepth;
-        if (Math.abs(ndcX) > 0.75 || Math.abs(ndcY) > 0.75) continue;
-
-        const x = rect.left + ((ndcX + 1) / 2) * rect.width;
-        const y = rect.top + ((1 - ndcY) / 2) * rect.height;
-        if (!best || worldZ > best.z) best = { id: burg.i, name: burg.name, x, y, z: worldZ };
+        const distance = Math.hypot(point.x - (rect.left + rect.width / 2), point.y - (rect.top + rect.height / 2));
+        if (!best || distance < best.distance) {
+          best = { id: burg.i, name: burg.name, x: point.x, y: point.y, distance };
+        }
       }
 
       if (!best) throw new Error("No front-facing burg was available for globe picking");

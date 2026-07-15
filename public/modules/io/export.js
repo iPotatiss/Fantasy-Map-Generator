@@ -212,6 +212,8 @@ async function getMapURL(
   {
     debug = false,
     noLabels = false,
+    noPointSymbols = false,
+    noMarkers = false,
     noWater = false,
     noScaleBar = false,
     noIce = false,
@@ -233,8 +235,12 @@ async function getMapURL(
   if (noLabels) {
     clone.select("#labels #states")?.remove();
     clone.select("#labels #burgLabels")?.remove();
-    clone.select("#icons #burgIcons")?.remove();
   }
+  if (noPointSymbols) {
+    clone.select("#icons #burgIcons")?.remove();
+    clone.select("#icons #anchors")?.remove();
+  }
+  if (noMarkers) clone.select("#markers")?.remove();
   if (noWater) {
     clone.select("#oceanBase").attr("opacity", 0);
     clone.select("#oceanPattern").attr("opacity", 0);
