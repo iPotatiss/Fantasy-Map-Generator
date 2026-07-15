@@ -10,6 +10,7 @@ import {
 } from "./vector-globe-data";
 
 const SETTLEMENT_ENTRY_ZOOM = 7.25;
+const SETTLEMENT_MAP_ZOOM = 10;
 const VECTOR_GLOBE_MAX_ZOOM = 11.5;
 
 let vectorMap: MapLibreMap | null = null;
@@ -19,6 +20,8 @@ let vectorReady = false;
 let vectorRevision = 0;
 let vectorUpdateTimer = 0;
 let vectorSettlement: HTMLElement | null = null;
+let vectorSettlementId = 0;
+let vectorSettlementTimer = 0;
 let vectorStage = "World";
 let vectorDataBuildMs = 0;
 let vectorPerformanceProfile: "quality" | "low-power" = "quality";
@@ -70,7 +73,9 @@ function createEmptyStyle(): StyleSpecification {
 }
 
 function addGeoJsonSource(id: string, data: GeoJSON.FeatureCollection) {
-  vectorMap?.addSource(id, { type: "geojson", data, tolerance: 0.25, maxzoom: 12 });
+  // World geometry does not gain information at city scale. Reusing regional
+  // tiles avoids tessellating the full globe again during every close zoom.
+  vectorMap?.addSource(id, { type: "geojson", data, tolerance: 0.25, maxzoom: 8 });
 }
 
 function addVectorSources(data: VectorGlobeData) {
@@ -433,7 +438,7 @@ function createHud() {
 
   const hint = document.createElement("div");
   hint.className = "fmg-vector-globe__hint";
-  hint.textContent = "Click a settlement to open its complete bird’s-eye map";
+  hint.textContent = "Zoom closer over a settlement to enter its bird’s-eye map";
   hint.dataset.visible = "false";
   vectorContainer.append(hud, hint);
   updateHud();
@@ -451,8 +456,10 @@ function openFeatureEditor(type: "burg" | "marker", id: number) {
 }
 
 export function closeVectorSettlement() {
+  if (!vectorSettlement) return;
   vectorSettlement?.remove();
   vectorSettlement = null;
+  vectorSettlementId = 0;
   vectorMap?.resize();
 }
 
@@ -476,8 +483,11 @@ export function openVectorSettlement(burgId: number) {
   header.className = "fmg-settlement-view__header";
   const back = document.createElement("button");
   back.type = "button";
-  back.textContent = "← Back to region";
-  back.addEventListener("click", closeVectorSettlement);
+  back.textContent = "← Zoom out to region";
+  back.addEventListener("click", () => {
+    closeVectorSettlement();
+    vectorMap?.easeTo({ zoom: SETTLEMENT_ENTRY_ZOOM + 0.5, duration: 450 });
+  });
   const title = document.createElement("strong");
   title.className = "fmg-settlement-view__title";
   title.textContent = burg.name || "Settlement";
@@ -502,7 +512,46 @@ export function openVectorSettlement(burgId: number) {
   view.append(header, content);
   vectorContainer.append(view);
   vectorSettlement = view;
+  vectorSettlementId = burgId;
   return true;
+}
+
+function getBurgNearestCenter(maxDistance = 150) {
+  if (!vectorMap || !vectorData) return 0;
+  const center = vectorMap.project(vectorMap.getCenter());
+  let closestId = 0;
+  let closestDistance = maxDistance * maxDistance;
+  for (const feature of vectorData.burgs.features) {
+    const projected = vectorMap.project(feature.geometry.coordinates as [number, number]);
+    const distance = (projected.x - center.x) ** 2 + (projected.y - center.y) ** 2;
+    if (distance >= closestDistance) continue;
+    const burgId = Number(feature.properties.burgId || feature.id || 0);
+    if (!burgId || !Burgs.getPreview(pack.burgs[burgId])?.preview) continue;
+    closestId = burgId;
+    closestDistance = distance;
+  }
+  return closestId;
+}
+
+function updateSettlementMap() {
+  if (!vectorMap || vectorMap.getZoom() < SETTLEMENT_MAP_ZOOM) {
+    closeVectorSettlement();
+    return;
+  }
+  const burgId = getBurgNearestCenter();
+  if (!burgId || burgId === vectorSettlementId) return;
+  openVectorSettlement(burgId);
+}
+
+function scheduleSettlementMap() {
+  if (vectorSettlementTimer) window.clearTimeout(vectorSettlementTimer);
+  vectorSettlementTimer = window.setTimeout(
+    () => {
+      vectorSettlementTimer = 0;
+      updateSettlementMap();
+    },
+    vectorPerformanceProfile === "low-power" ? 320 : 180
+  );
 }
 
 function getBurgIdNearPoint(point: { x: number; y: number }) {
@@ -528,7 +577,13 @@ function handleBurgClick(point: { x: number; y: number }, alwaysOpenSettlement =
   const burgId = getBurgIdNearPoint(point);
   if (!burgId) return false;
   if (alwaysOpenSettlement || (vectorMap?.getZoom() || 0) >= SETTLEMENT_ENTRY_ZOOM) {
-    if (openVectorSettlement(burgId)) return true;
+    const burg = pack.burgs[burgId];
+    vectorMap?.easeTo({
+      center: mapPointToVectorLngLat([burg.x, burg.y], graphWidth, graphHeight),
+      zoom: SETTLEMENT_MAP_ZOOM,
+      duration: vectorPerformanceProfile === "low-power" ? 350 : 600
+    });
+    return true;
   }
   openFeatureEditor("burg", burgId);
   return true;
@@ -570,6 +625,8 @@ function attachInteractions() {
     if (id) openFeatureEditor("marker", id);
   });
   vectorMap.on("zoom", updateHud);
+  vectorMap.on("moveend", scheduleSettlementMap);
+  vectorMap.on("zoomend", scheduleSettlementMap);
 }
 
 function setSourceData(id: string, data: GeoJSON.FeatureCollection) {
@@ -695,6 +752,8 @@ export async function createVectorGlobe(container: HTMLElement) {
 export function stopVectorGlobe() {
   if (vectorUpdateTimer) window.clearTimeout(vectorUpdateTimer);
   vectorUpdateTimer = 0;
+  if (vectorSettlementTimer) window.clearTimeout(vectorSettlementTimer);
+  vectorSettlementTimer = 0;
   vectorRevision++;
   closeVectorSettlement();
   $("#burgEditor, #markerEditor").off(".vectorGlobe");
@@ -748,6 +807,7 @@ export function getVectorGlobeDiagnostics() {
     performanceProfile: vectorPerformanceProfile,
     pixelRatio: vectorPixelRatio,
     settlementEntryZoom: SETTLEMENT_ENTRY_ZOOM,
+    settlementMapZoom: SETTLEMENT_MAP_ZOOM,
     settlementOpen: Boolean(vectorSettlement),
     projection: vectorMap?.getProjection()?.type || "globe",
     sources: vectorMap?.getStyle()?.sources ? Object.keys(vectorMap.getStyle().sources).length : 0,

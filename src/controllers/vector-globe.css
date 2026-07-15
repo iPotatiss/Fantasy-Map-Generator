@@ -95,6 +95,19 @@
   grid-template-rows: auto 1fr;
   color: #f7f4ea;
   background: #242838;
+  animation: fmg-settlement-arrive 300ms ease-out both;
+}
+
+@keyframes fmg-settlement-arrive {
+  from {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 .fmg-settlement-view__header {
@@ -130,6 +143,12 @@
   height: 100%;
   border: 0;
   background: #e8dfca;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .fmg-settlement-view {
+    animation: none;
+  }
 }
 
 .fmg-vector-globe__loading {

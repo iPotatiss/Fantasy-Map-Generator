@@ -128,7 +128,7 @@ test.describe("vector globe and settlement maps", () => {
     expect(rendering.features.burgs).toBeGreaterThan(0);
   });
 
-  test("keeps settlement information clickable and opens the bird's-eye map at deep zoom", async ({ page }) => {
+  test("keeps settlement information clickable and enters the bird's-eye map through zoom", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", error => errors.push(`pageerror: ${error.message}`));
     await enterVectorGlobe(page);
@@ -155,19 +155,12 @@ test.describe("vector globe and settlement maps", () => {
     await expect(page.locator("#burgName")).toHaveValue(target!.name);
     await page.evaluate(() => (window as any).$("#burgEditor").dialog("close"));
 
-    expect(await page.evaluate(id => (window as any).VectorGlobe.focusBurg(id, 8), target!.id)).toBe(true);
-    await page.waitForTimeout(250);
-    const settlementPoint = await page.evaluate(id => {
-      const app = window as any;
-      const burg = app.pack.burgs[id];
-      return app.ThreeD.projectGlobeMapPointToScreen(burg.x, burg.y);
-    }, target!.id);
-    await page.mouse.click(settlementPoint.x, settlementPoint.y);
+    expect(await page.evaluate(id => (window as any).VectorGlobe.focusBurg(id, 10.2), target!.id)).toBe(true);
     await expect(page.locator(".fmg-settlement-view")).toBeVisible();
     await expect(page.locator(".fmg-settlement-view__title")).toHaveText(target!.name);
     await expect(page.locator(".fmg-settlement-view object")).toHaveAttribute("data", /preview=1/);
 
-    await page.getByRole("button", { name: "Back to region" }).click();
+    await page.getByRole("button", { name: "Zoom out to region" }).click();
     await expect(page.locator(".fmg-settlement-view")).toHaveCount(0);
     expect(errors).toEqual([]);
   });
