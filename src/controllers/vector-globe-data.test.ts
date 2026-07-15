@@ -21,8 +21,15 @@ describe("vector globe data", () => {
         province: new Uint8Array(),
         biome: new Uint8Array()
       },
-      vertices: { p: [] },
-      features: [],
+      vertices: {
+        p: [
+          [0, 0],
+          [1000, 0],
+          [1000, 500],
+          [0, 500]
+        ]
+      },
+      features: [null, { i: 1, type: "island", vertices: [0, 1, 2, 3] }],
       routes: [
         {
           i: 1,
@@ -80,6 +87,13 @@ describe("vector globe data", () => {
       [180, -85]
     ]);
     expect(data.rivers.features[0].properties.name).toBe("Test River");
+    expect(data.landmasses.features[0].geometry.coordinates[0]).toEqual([
+      [-180, 85],
+      [180, 85],
+      [180, -85],
+      [-180, -85],
+      [-180, 85]
+    ]);
     expect(data.burgs.features[0]).toMatchObject({
       properties: { burgId: 1, name: "Center" },
       geometry: { coordinates: [0, 0] }

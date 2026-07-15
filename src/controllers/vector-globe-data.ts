@@ -1,5 +1,4 @@
 import type { Feature, FeatureCollection, LineString, MultiLineString, Point, Polygon } from "geojson";
-import { fractalizeCoastline } from "../renderers/coastline-fractal";
 import type { PackedGraph } from "../types/PackedGraph";
 import { getIsolines } from "../utils/pathUtils";
 
@@ -50,31 +49,6 @@ function getClosedRing(points: Array<[number, number]>) {
   return points.length >= 4 ? points : null;
 }
 
-function smoothPoints(points: Array<[number, number]>, closed: boolean, iterations = 2) {
-  let result = points.slice();
-  if (closed && result.length > 1) {
-    const first = result[0];
-    const last = result.at(-1)!;
-    if (first[0] === last[0] && first[1] === last[1]) result.pop();
-  }
-
-  for (let iteration = 0; iteration < iterations; iteration++) {
-    if (result.length < 3) break;
-    const next: Array<[number, number]> = [];
-    if (!closed) next.push(result[0]);
-    const end = closed ? result.length : result.length - 1;
-    for (let index = 0; index < end; index++) {
-      const from = result[index];
-      const to = result[(index + 1) % result.length];
-      next.push([from[0] * 0.75 + to[0] * 0.25, from[1] * 0.75 + to[1] * 0.25]);
-      next.push([from[0] * 0.25 + to[0] * 0.75, from[1] * 0.25 + to[1] * 0.75]);
-    }
-    if (!closed) next.push(result.at(-1)!);
-    result = next;
-  }
-  return result;
-}
-
 function chainSegments(segments: Array<Array<[number, number]>>) {
   const endpointKey = ([x, y]: [number, number]) => `${x.toFixed(7)},${y.toFixed(7)}`;
   const byEndpoint = new Map<string, number[]>();
@@ -115,25 +89,18 @@ function chainSegments(segments: Array<Array<[number, number]>>) {
       const nextPoint = endpointKey(segment[0]) === headKey ? segment.at(-1)! : segment[0];
       line.unshift(nextPoint);
     }
-    lines.push(line.length > 3 ? smoothPoints(line, false, 1) : line);
+    // Keep shared boundaries topologically exact. Smoothing each visual layer
+    // independently creates gaps and overlaps where states meet the coast.
+    lines.push(line);
   }
   return lines;
 }
 
-function getFeatureRing(
-  pack: PackedGraph,
-  vertexIds: number[],
-  featureId: number,
-  featureType: "island" | "lake" | "ocean",
-  width: number,
-  height: number
-) {
+function getFeatureRing(pack: PackedGraph, vertexIds: number[], width: number, height: number) {
   const points = vertexIds
     .map(vertexId => pack.vertices.p[vertexId])
     .filter((point): point is [number, number] => Boolean(point));
-  const fractalized = fractalizeCoastline(points, featureId, featureType).points;
-  const smoothed = smoothPoints(fractalized, true, fractalized.length < 220 ? 2 : 1);
-  return getClosedRing(smoothed.map(point => mapPointToVectorLngLat(point, width, height)));
+  return getClosedRing(points.map(point => mapPointToVectorLngLat(point, width, height)));
 }
 
 function getSharedEdge(pack: PackedGraph, fromCell: number, toCell: number, width: number, height: number) {
@@ -172,8 +139,9 @@ export function buildVectorGlobeData(
     }
   }
 
-  // Render one smooth vector polygon per political or biome region instead of
-  // exposing the individual Voronoi generation cells at close zoom.
+  // Render one vector polygon per political or biome region instead of
+  // exposing individual Voronoi cells. Do not deform these rings: their outer
+  // vertices must stay identical to the landmass and lake boundaries.
   const areas = getIsolines(
     pack,
     cellId => {
@@ -191,8 +159,9 @@ export function buildVectorGlobeData(
       ? palette.stateColors[typeId] || palette.biomeColors[0] || "#d9e8c4"
       : palette.biomeColors[typeId] || palette.stateColors[0] || "#d9e8c4";
     for (const polygon of isoline.polygons || []) {
-      const smoothed = smoothPoints(polygon as Array<[number, number]>, true, polygon.length < 220 ? 2 : 1);
-      const ring = getClosedRing(smoothed.map(point => mapPointToVectorLngLat(point, width, height)));
+      const ring = getClosedRing(
+        (polygon as Array<[number, number]>).map(point => mapPointToVectorLngLat(point, width, height))
+      );
       if (!ring) continue;
       landFeatures.push({
         type: "Feature",
@@ -208,7 +177,7 @@ export function buildVectorGlobeData(
 
   for (const feature of pack.features.slice(1)) {
     if (!feature?.vertices?.length) continue;
-    const ring = getFeatureRing(pack, feature.vertices, feature.i, feature.type, width, height);
+    const ring = getFeatureRing(pack, feature.vertices, width, height);
     if (!ring) continue;
 
     if (feature.type === "island") {
