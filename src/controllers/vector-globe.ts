@@ -10,8 +10,8 @@ import {
 } from "./vector-globe-data";
 
 const SETTLEMENT_ENTRY_ZOOM = 7.25;
-const SETTLEMENT_PRELOAD_ZOOM = 8.4;
-const SETTLEMENT_MAP_ZOOM = 10;
+const SETTLEMENT_PRELOAD_ZOOM = 8;
+const SETTLEMENT_MAP_ZOOM = 9.5;
 const VECTOR_GLOBE_MAX_ZOOM = 11.5;
 
 let vectorMap: MapLibreMap | null = null;
@@ -500,7 +500,6 @@ function createSettlementFrame(burgId: number, preview: string) {
   frame.setAttribute("aria-label", `${burg.name || "Settlement"} bird's-eye map`);
   frame.addEventListener("load", () => {
     frame.dataset.ready = "true";
-    frame.closest<HTMLElement>(".fmg-settlement-view")?.setAttribute("data-ready", "true");
   });
   return frame;
 }
@@ -539,7 +538,7 @@ export function openVectorSettlement(burgId: number) {
   header.className = "fmg-settlement-view__header";
   const back = document.createElement("button");
   back.type = "button";
-  back.textContent = "← Zoom out to region";
+  back.textContent = "← Return to globe";
   back.addEventListener("click", () => {
     vectorSettlementExiting = true;
     closeVectorSettlement();
@@ -575,16 +574,32 @@ export function openVectorSettlement(burgId: number) {
   clouds.innerHTML = `<span>Descending through the clouds</span>`;
   content.append(clouds);
   view.append(header, content);
-  view.dataset.ready = frame.dataset.ready || "false";
+  view.dataset.ready = "false";
   view.dataset.interactive = "true";
   view.classList.toggle("fmg-settlement-view--low-power", vectorPerformanceProfile === "low-power");
+  const descentStarted = performance.now();
+  let revealed = false;
+  const revealTown = () => {
+    if (revealed) return;
+    revealed = true;
+    const minimumDescent = vectorPerformanceProfile === "low-power" ? 420 : 650;
+    window.setTimeout(
+      () => {
+        if (view.isConnected) view.dataset.ready = "true";
+      },
+      Math.max(0, minimumDescent - (performance.now() - descentStarted))
+    );
+  };
+  if (frame.dataset.ready === "true") revealTown();
+  else frame.addEventListener("load", revealTown, { once: true });
+  window.setTimeout(revealTown, 2500);
   vectorContainer.append(view);
   vectorSettlement = view;
   vectorSettlementId = burgId;
   return true;
 }
 
-function getBurgNearestCenter(maxDistance = 150) {
+function getBurgNearestCenter(maxDistance = 260) {
   if (!vectorMap || !vectorData) return 0;
   const center = vectorMap.project(vectorMap.getCenter());
   let closestId = 0;
@@ -622,7 +637,7 @@ function scheduleSettlementMap() {
       }
       updateSettlementMap();
     },
-    vectorPerformanceProfile === "low-power" ? 320 : 180
+    vectorPerformanceProfile === "low-power" ? 100 : 60
   );
 }
 
@@ -696,7 +711,10 @@ function attachInteractions() {
     const id = Number(event.features?.[0]?.properties?.markerId || event.features?.[0]?.id || 0);
     if (id) openFeatureEditor("marker", id);
   });
-  vectorMap.on("zoom", updateHud);
+  vectorMap.on("zoom", () => {
+    updateHud();
+    if ((vectorMap?.getZoom() || 0) >= SETTLEMENT_MAP_ZOOM) scheduleSettlementMap();
+  });
   vectorMap.on("movestart", () => setMotionDetailPaused(true));
   vectorMap.on("moveend", scheduleSettlementMap);
   vectorMap.on("moveend", () => setMotionDetailPaused(false));

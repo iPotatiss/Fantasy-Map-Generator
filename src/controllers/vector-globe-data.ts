@@ -91,6 +91,73 @@ function getClosedRing(points: Array<[number, number]>) {
   return points.length >= 4 ? points : null;
 }
 
+type NaturalCoastGeometry = {
+  edges: Set<string>;
+  vertices: Map<string, [number, number]>;
+};
+
+const pointKey = ([x, y]: [number, number]) => `${x.toFixed(4)},${y.toFixed(4)}`;
+const edgeKey = (a: [number, number], b: [number, number]) => [pointKey(a), pointKey(b)].sort().join("|");
+
+function buildNaturalCoastGeometry(pack: PackedGraph, width: number, height: number): NaturalCoastGeometry {
+  const edges = new Set<string>();
+  const vertices = new Map<string, [number, number]>();
+  for (const feature of pack.features.slice(1)) {
+    if (!feature?.vertices?.length || (feature.type !== "island" && feature.type !== "lake")) continue;
+    const points = feature.vertices.map(vertexId => pack.vertices.p[vertexId]).filter(Boolean) as Array<
+      [number, number]
+    >;
+    for (let index = 0; index < points.length; index++) {
+      const previous = points[(index - 1 + points.length) % points.length];
+      const current = points[index];
+      const next = points[(index + 1) % points.length];
+      const onMapEdge = current[0] === 0 || current[0] === width || current[1] === 0 || current[1] === height;
+      const nextOnMapEdge = next[0] === 0 || next[0] === width || next[1] === 0 || next[1] === height;
+      if (!onMapEdge || !nextOnMapEdge) edges.add(edgeKey(current, next));
+      vertices.set(
+        pointKey(current),
+        onMapEdge
+          ? current
+          : [current[0] * 0.6 + (previous[0] + next[0]) * 0.2, current[1] * 0.6 + (previous[1] + next[1]) * 0.2]
+      );
+    }
+  }
+  return { edges, vertices };
+}
+
+function naturalizeRing(points: Array<[number, number]>, coast: NaturalCoastGeometry) {
+  const result: Array<[number, number]> = [];
+  for (let index = 0; index < points.length; index++) {
+    const rawStart = points[index];
+    const rawEnd = points[(index + 1) % points.length];
+    const start = coast.vertices.get(pointKey(rawStart)) || rawStart;
+    const end = coast.vertices.get(pointKey(rawEnd)) || rawEnd;
+    if (!result.length) result.push(start);
+    if (coast.edges.has(edgeKey(rawStart, rawEnd))) {
+      const dx = end[0] - start[0];
+      const dy = end[1] - start[1];
+      const length = Math.hypot(dx, dy);
+      if (length > 0.8) {
+        const hash = edgeKey(rawStart, rawEnd)
+          .split("")
+          .reduce((value, character) => (value * 31 + character.charCodeAt(0)) | 0, 7);
+        const direction = (hash & 1) === 0 ? 1 : -1;
+        const amplitude = Math.min(length * 0.1, Math.sqrt(length) * 0.45) * direction;
+        const perpendicular: [number, number] = [-dy / length, dx / length];
+        result.push(
+          [start[0] + dx / 3 + perpendicular[0] * amplitude, start[1] + dy / 3 + perpendicular[1] * amplitude],
+          [
+            start[0] + (dx * 2) / 3 - perpendicular[0] * amplitude * 0.55,
+            start[1] + (dy * 2) / 3 - perpendicular[1] * amplitude * 0.55
+          ]
+        );
+      }
+    }
+    result.push(end);
+  }
+  return result;
+}
+
 function chainSegments(segments: Array<Array<[number, number]>>) {
   const endpointKey = ([x, y]: [number, number]) => `${x.toFixed(7)},${y.toFixed(7)}`;
   const byEndpoint = new Map<string, number[]>();
@@ -138,11 +205,17 @@ function chainSegments(segments: Array<Array<[number, number]>>) {
   return lines;
 }
 
-function getFeatureRing(pack: PackedGraph, vertexIds: number[], width: number, height: number) {
+function getFeatureRing(
+  pack: PackedGraph,
+  vertexIds: number[],
+  width: number,
+  height: number,
+  coast: NaturalCoastGeometry
+) {
   const points = vertexIds
     .map(vertexId => pack.vertices.p[vertexId])
     .filter((point): point is [number, number] => Boolean(point));
-  return getClosedRing(points.map(point => mapPointToVectorLngLat(point, width, height)));
+  return getClosedRing(naturalizeRing(points, coast).map(point => mapPointToVectorLngLat(point, width, height)));
 }
 
 function getSharedEdge(pack: PackedGraph, fromCell: number, toCell: number, width: number, height: number) {
@@ -164,6 +237,7 @@ export function buildVectorGlobeData(
   const coastlineFeatures: Array<Feature<LineString, VectorProperties>> = [];
   const stateBorderLines: Array<Array<[number, number]>> = [];
   const provinceBorderLines: Array<Array<[number, number]>> = [];
+  const naturalCoast = buildNaturalCoastGeometry(pack, width, height);
 
   for (const cellId of pack.cells.i) {
     if (pack.cells.h[cellId] < 20) continue;
@@ -202,7 +276,9 @@ export function buildVectorGlobeData(
       : palette.biomeColors[typeId] || palette.stateColors[0] || "#d9e8c4";
     for (const polygon of isoline.polygons || []) {
       const ring = getClosedRing(
-        (polygon as Array<[number, number]>).map(point => mapPointToVectorLngLat(point, width, height))
+        naturalizeRing(polygon as Array<[number, number]>, naturalCoast).map(point =>
+          mapPointToVectorLngLat(point, width, height)
+        )
       );
       if (!ring) continue;
       landFeatures.push({
@@ -219,7 +295,7 @@ export function buildVectorGlobeData(
 
   for (const feature of pack.features.slice(1)) {
     if (!feature?.vertices?.length) continue;
-    const ring = getFeatureRing(pack, feature.vertices, width, height);
+    const ring = getFeatureRing(pack, feature.vertices, width, height, naturalCoast);
     if (!ring) continue;
 
     if (feature.type === "island") {
