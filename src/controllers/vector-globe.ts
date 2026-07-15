@@ -10,6 +10,7 @@ import {
 } from "./vector-globe-data";
 
 const SETTLEMENT_ENTRY_ZOOM = 7.25;
+const SETTLEMENT_PRELOAD_ZOOM = 8.4;
 const SETTLEMENT_MAP_ZOOM = 10;
 const VECTOR_GLOBE_MAX_ZOOM = 11.5;
 
@@ -22,6 +23,8 @@ let vectorUpdateTimer = 0;
 let vectorSettlement: HTMLElement | null = null;
 let vectorSettlementId = 0;
 let vectorSettlementTimer = 0;
+let vectorPreloadedSettlement: HTMLIFrameElement | null = null;
+let vectorPreloadedSettlementId = 0;
 let vectorStage = "World";
 let vectorDataBuildMs = 0;
 let vectorPerformanceProfile: "quality" | "low-power" = "quality";
@@ -463,6 +466,41 @@ export function closeVectorSettlement() {
   vectorMap?.resize();
 }
 
+function clearPreloadedSettlement() {
+  vectorPreloadedSettlement?.remove();
+  vectorPreloadedSettlement = null;
+  vectorPreloadedSettlementId = 0;
+}
+
+function createSettlementFrame(burgId: number, preview: string) {
+  const burg = pack.burgs[burgId];
+  const frame = document.createElement("iframe");
+  frame.src = preview;
+  frame.loading = "eager";
+  frame.dataset.burgId = String(burgId);
+  frame.dataset.ready = "false";
+  frame.setAttribute("aria-label", `${burg.name || "Settlement"} bird's-eye map`);
+  frame.addEventListener("load", () => {
+    frame.dataset.ready = "true";
+    frame.closest<HTMLElement>(".fmg-settlement-view")?.setAttribute("data-ready", "true");
+  });
+  return frame;
+}
+
+function preloadSettlement(burgId: number) {
+  if (!vectorContainer || !burgId || burgId === vectorPreloadedSettlementId || burgId === vectorSettlementId) return;
+  const burg = pack.burgs[burgId];
+  const previewData = Burgs.getPreview(burg);
+  const preview = previewData.preview || previewData.link;
+  if (!preview) return;
+  clearPreloadedSettlement();
+  const frame = createSettlementFrame(burgId, preview);
+  frame.className = "fmg-settlement-preload";
+  vectorContainer.append(frame);
+  vectorPreloadedSettlement = frame;
+  vectorPreloadedSettlementId = burgId;
+}
+
 export function openVectorSettlement(burgId: number) {
   const burg = pack.burgs[burgId];
   if (!burg || burg.removed || !vectorContainer) return false;
@@ -495,21 +533,50 @@ export function openVectorSettlement(burgId: number) {
   inspect.type = "button";
   inspect.textContent = "Settlement details";
   inspect.addEventListener("click", () => openFeatureEditor("burg", burgId));
+  const explore = document.createElement("button");
+  explore.type = "button";
+  explore.textContent = "Interact with town";
   const external = document.createElement("a");
   external.textContent = "Open original ↗";
   external.href = previewData.link || preview;
   external.target = "_blank";
   external.rel = "noopener noreferrer";
-  header.append(back, title, inspect, external);
+  header.append(back, title, explore, inspect, external);
 
   const content = document.createElement("div");
   content.className = "fmg-settlement-view__content";
-  const object = document.createElement("object");
-  object.data = preview;
-  object.type = "text/html";
-  object.setAttribute("aria-label", `${burg.name || "Settlement"} bird's-eye map`);
-  content.append(object);
+  const frame =
+    vectorPreloadedSettlementId === burgId && vectorPreloadedSettlement
+      ? vectorPreloadedSettlement
+      : createSettlementFrame(burgId, preview);
+  frame.className = "fmg-settlement-view__frame";
+  vectorPreloadedSettlement = null;
+  vectorPreloadedSettlementId = 0;
+  content.append(frame);
+
+  const clouds = document.createElement("div");
+  clouds.className = "fmg-settlement-view__clouds";
+  clouds.innerHTML = `<span>Descending through the clouds</span>`;
+  content.append(clouds);
   view.append(header, content);
+  view.dataset.ready = frame.dataset.ready || "false";
+  view.dataset.interactive = "false";
+  view.classList.toggle("fmg-settlement-view--low-power", vectorPerformanceProfile === "low-power");
+  explore.addEventListener("click", () => {
+    const interactive = view.dataset.interactive !== "true";
+    view.dataset.interactive = String(interactive);
+    explore.textContent = interactive ? "Return to zoom controls" : "Interact with town";
+  });
+  view.addEventListener(
+    "wheel",
+    event => {
+      if (view.dataset.interactive === "true" || event.deltaY <= 0) return;
+      event.preventDefault();
+      closeVectorSettlement();
+      vectorMap?.easeTo({ zoom: SETTLEMENT_ENTRY_ZOOM + 0.5, duration: 450 });
+    },
+    { passive: false }
+  );
   vectorContainer.append(view);
   vectorSettlement = view;
   vectorSettlementId = burgId;
@@ -548,6 +615,9 @@ function scheduleSettlementMap() {
   vectorSettlementTimer = window.setTimeout(
     () => {
       vectorSettlementTimer = 0;
+      if ((vectorMap?.getZoom() || 0) >= SETTLEMENT_PRELOAD_ZOOM && !vectorSettlement) {
+        preloadSettlement(getBurgNearestCenter(220));
+      }
       updateSettlementMap();
     },
     vectorPerformanceProfile === "low-power" ? 320 : 180
@@ -754,6 +824,7 @@ export function stopVectorGlobe() {
   vectorUpdateTimer = 0;
   if (vectorSettlementTimer) window.clearTimeout(vectorSettlementTimer);
   vectorSettlementTimer = 0;
+  clearPreloadedSettlement();
   vectorRevision++;
   closeVectorSettlement();
   $("#burgEditor, #markerEditor").off(".vectorGlobe");
@@ -807,6 +878,7 @@ export function getVectorGlobeDiagnostics() {
     performanceProfile: vectorPerformanceProfile,
     pixelRatio: vectorPixelRatio,
     settlementEntryZoom: SETTLEMENT_ENTRY_ZOOM,
+    settlementPreloadZoom: SETTLEMENT_PRELOAD_ZOOM,
     settlementMapZoom: SETTLEMENT_MAP_ZOOM,
     settlementOpen: Boolean(vectorSettlement),
     projection: vectorMap?.getProjection()?.type || "globe",

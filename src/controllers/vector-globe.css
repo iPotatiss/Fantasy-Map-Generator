@@ -136,6 +136,14 @@
   background: #e8dfca;
 }
 
+.fmg-settlement-preload {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
 .fmg-settlement-view__content object,
 .fmg-settlement-view__content iframe {
   display: block;
@@ -143,10 +151,62 @@
   height: 100%;
   border: 0;
   background: #e8dfca;
+  pointer-events: none;
+}
+
+.fmg-settlement-view[data-interactive="true"] .fmg-settlement-view__frame {
+  pointer-events: auto;
+}
+
+.fmg-settlement-view__clouds {
+  position: absolute;
+  z-index: 2;
+  inset: -18%;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  color: rgb(255 255 255 / 92%);
+  background:
+    radial-gradient(ellipse at 15% 40%, rgb(255 255 255 / 95%) 0 12%, transparent 32%),
+    radial-gradient(ellipse at 75% 25%, rgb(238 245 252 / 92%) 0 16%, transparent 38%),
+    radial-gradient(ellipse at 55% 78%, rgb(255 255 255 / 88%) 0 18%, transparent 42%),
+    linear-gradient(#91abc5, #d9e4ec);
+  opacity: 1;
+  pointer-events: none;
+  transform: scale(1.5);
+  transition: opacity 700ms ease 250ms;
+  animation: fmg-cloud-dive 1.35s cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  font: 600 14px/1.3 system-ui, sans-serif;
+  letter-spacing: 0.08em;
+  text-shadow: 0 2px 8px rgb(34 51 70 / 55%);
+  text-transform: uppercase;
+}
+
+.fmg-settlement-view[data-ready="true"] .fmg-settlement-view__clouds {
+  opacity: 0;
+}
+
+@keyframes fmg-cloud-dive {
+  from {
+    transform: scale(1);
+  }
+
+  to {
+    transform: scale(2.2);
+  }
+}
+
+.fmg-settlement-view--low-power .fmg-settlement-view__clouds {
+  background: linear-gradient(#91abc5, #e8eef2);
+  animation-duration: 900ms;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .fmg-settlement-view {
+    animation: none;
+  }
+
+  .fmg-settlement-view__clouds {
     animation: none;
   }
 }
