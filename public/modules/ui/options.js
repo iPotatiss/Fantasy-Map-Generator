@@ -971,9 +971,16 @@ function enterStandardView() {
   heightmap3DView.classList.remove("pressed");
   viewStandard.classList.add("pressed");
 
-  if (!ensureEl("canvas3d")) return;
+  const drawingToolbox = document.getElementById("drawingToolbox");
+  if (drawingToolbox?.dataset.hiddenByGlobe === "true") {
+    drawingToolbox.style.display = "";
+    delete drawingToolbox.dataset.hiddenByGlobe;
+  }
+
+  const canvas = document.getElementById("canvas3d");
+  if (!canvas) return;
   ThreeD.stop();
-  ensureEl("canvas3d").remove();
+  canvas.remove();
   if (options3dUpdate.offsetParent) $("#options3d").dialog("close");
   if (preview3d.offsetParent) $("#preview3d").dialog("close");
 }
@@ -999,7 +1006,10 @@ async function enter3dView(type) {
 
   canvas.style.display = "block";
   canvas.onmouseenter = () => {
-    const help = "Drag to pan • Scroll to zoom • Right-click drag to rotate • <b>O</b> to toggle options";
+    const help =
+      canvas.dataset.type === "viewGlobe"
+        ? "Drag to rotate • Scroll to zoom • Click a burg or marker to edit • <b>O</b> for options"
+        : "Drag to pan • Scroll to zoom • Right-click drag to rotate • <b>O</b> to toggle options";
     +canvas.dataset.hovered > 2 ? tip("") : tip(help);
     canvas.dataset.hovered = (+canvas.dataset.hovered | 0) + 1;
   };
@@ -1015,7 +1025,17 @@ async function enter3dView(type) {
     });
   } else document.body.insertBefore(canvas, optionsContainer);
 
-  toggle3dOptions();
+  // Globe is primarily a viewing and inspection surface. Keep editing tools
+  // and technical settings out of the way; O still opens the settings.
+  if (type === "viewGlobe") {
+    const drawingToolbox = document.getElementById("drawingToolbox");
+    if (drawingToolbox && drawingToolbox.style.display !== "none") {
+      drawingToolbox.dataset.hiddenByGlobe = "true";
+      drawingToolbox.style.display = "none";
+    }
+  } else {
+    toggle3dOptions();
+  }
 }
 
 function resize3d() {

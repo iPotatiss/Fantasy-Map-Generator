@@ -1,19 +1,20 @@
-/* VTT bridge — feeds the live FMG map to a parent "World Map Maker" frame on demand.
+/* VTT bridge — connects FMG to a parent "World Map Maker" frame.
  *
- * The VTT app embeds this generator in a cross-origin iframe and cannot read the map
- * out of it. This script answers a `{type:"FMG_REQUEST_EXPORT"}` postMessage from the
- * parent with `{type:"FMG_EXPORT", json}` — a JSON payload shaped exactly for the VTT's
- * `fmg-geometry.ts` struct-of-arrays reader (`fromFmgJson`), so the parent's flat/globe
- * renderer shows the current map without a file upload.
+ * Protocol 2 binds the exact parent window, origin and random session before it accepts
+ * Builder / Globe view commands. Map geometry and image data are never sent to the parent.
  *
- * Plain ES5, no imports. Reads FMG globals (pack, mapCoordinates, biomesData,
- * graphWidth/graphHeight). Only the sub-fields the VTT reader consumes are sent, and
- * every TypedArray is converted to a plain array (JSON.stringify turns a TypedArray into
- * an object with numeric keys, which fails the reader's Array.isArray guards). Harmless
- * no-op unless a parent frame requests an export.
+ * Plain ES5, no imports. Same-page export helpers are retained for FMG's own tooling,
+ * but the message handler never invokes them or returns their data across origins.
  */
 (function () {
   "use strict";
+
+  var PROTOCOL_VERSION = 2;
+  var SESSION_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{15,127}$/;
+  var REQUEST_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+  var client = null;
+  var viewQueue = [];
+  var viewBusy = false;
 
   // Array.from-style copy; covers TypedArrays and plain arrays, guards non-array-likes.
   function toArr(a) {
@@ -63,15 +64,20 @@
     var W = (typeof graphWidth !== "undefined" ? +graphWidth : 0) || 0;
     var H = (typeof graphHeight !== "undefined" ? +graphHeight : 0) || 0;
     var done = false;
+    var timeout = setTimeout(function () {
+      fail("image export timed out");
+    }, 45000);
     function fail(msg) {
       if (!done) {
         done = true;
+        clearTimeout(timeout);
         cb(null, msg, W, H);
       }
     }
     function ok(dataUrl) {
       if (!done) {
         done = true;
+        clearTimeout(timeout);
         cb(dataUrl, null, W, H);
       }
     }
@@ -93,7 +99,7 @@
         var img = new Image();
         img.onload = function () {
           try {
-            var s = scale || 1;
+            var s = clampRasterScale(scale, W, H);
             var c = document.createElement("canvas");
             c.width = Math.max(1, Math.round(W * s));
             c.height = Math.max(1, Math.round(H * s));
@@ -123,6 +129,21 @@
     }).catch(function (e) {
       fail("getMapURL failed: " + (e && e.message));
     });
+  }
+
+  // Keep browser canvas allocations bounded even if an untrusted embed asks for an
+  // extreme scale or FMG is running an unusually large custom map.
+  function clampRasterScale(value, width, height) {
+    var scale = +value;
+    if (!isFinite(scale)) scale = 1;
+    scale = Math.max(0.25, Math.min(4, scale));
+
+    var maxDimension = 8192;
+    var maxPixels = 33554432;
+    var w = Math.max(1, +width || 1);
+    var h = Math.max(1, +height || 1);
+    scale = Math.min(scale, maxDimension / w, maxDimension / h, Math.sqrt(maxPixels / (w * h)));
+    return Math.max(0.01, scale);
   }
 
   function buildPayload() {
@@ -238,67 +259,245 @@
   }
 
   function reply(target, origin, msg) {
+    if (!target || !origin || origin === "null" || origin === "*") return false;
     try {
-      target.postMessage(msg, origin || "*");
+      target.postMessage(msg, origin);
+      return true;
     } catch (e) {
-      try {
-        target.postMessage(msg, "*");
-      } catch (e2) {}
+      return false;
     }
+  }
+
+  function validOrigin(origin) {
+    return typeof origin === "string" && origin !== "" && origin !== "null";
+  }
+
+  function validSessionId(value) {
+    return typeof value === "string" && SESSION_ID_RE.test(value);
+  }
+
+  function validRequestId(value) {
+    return typeof value === "string" && REQUEST_ID_RE.test(value);
+  }
+
+  function fromParent(ev) {
+    return !!ev && window.parent && window.parent !== window && ev.source === window.parent && validOrigin(ev.origin);
+  }
+
+  function isBoundRequest(ev, data) {
+    return (
+      !!client &&
+      ev.source === client.source &&
+      ev.origin === client.origin &&
+      data.protocol === PROTOCOL_VERSION &&
+      data.sessionId === client.sessionId
+    );
+  }
+
+  function currentView() {
+    var globe = document.getElementById("viewGlobe");
+    return globe && globe.classList.contains("pressed") ? "globe" : "builder";
+  }
+
+  function protocolReply(type, request, extra) {
+    if (!client) return;
+    if (request && request.sessionId && request.sessionId !== client.sessionId) return;
+    var message = {
+      type: type,
+      protocol: PROTOCOL_VERSION,
+      sessionId: client.sessionId
+    };
+    if (request && validRequestId(request.requestId)) message.requestId = request.requestId;
+    if (extra) {
+      for (var key in extra) {
+        if (Object.prototype.hasOwnProperty.call(extra, key)) message[key] = extra[key];
+      }
+    }
+    reply(client.source, client.origin, message);
+  }
+
+  function protocolError(request, code, message) {
+    protocolReply("FMG_ERROR", request, { code: code, message: message });
+  }
+
+  function handleConnect(ev, data) {
+    if (!fromParent(ev) || data.protocol !== PROTOCOL_VERSION || !validSessionId(data.sessionId)) return;
+
+    // A reload of the host application may create a fresh session while retaining the
+    // same iframe. Only the already-bound parent at the same exact origin may rebind it.
+    if (client && (client.source !== ev.source || client.origin !== ev.origin)) return;
+    if (!client || client.sessionId !== data.sessionId) {
+      viewQueue = [];
+    }
+    client = { source: ev.source, origin: ev.origin, sessionId: data.sessionId };
+    protocolReply("FMG_CONNECTED", data, {
+      view: currentView(),
+      capabilities: ["view.switch"]
+    });
+  }
+
+  function viewIsReady(view) {
+    if (view === "builder") {
+      var standard = document.getElementById("viewStandard");
+      return !!standard && standard.classList.contains("pressed");
+    }
+
+    var globe = document.getElementById("viewGlobe");
+    var canvas = document.getElementById("canvas3d");
+    var canvasReady =
+      !!globe &&
+      globe.classList.contains("pressed") &&
+      !!canvas &&
+      canvas.dataset &&
+      canvas.dataset.type === "viewGlobe" &&
+      canvas.style.display !== "none";
+    if (!canvasReady) return false;
+    if (!window.ThreeD || typeof window.ThreeD.isGlobeReady !== "function") return true;
+    try {
+      return !!window.ThreeD.isGlobeReady();
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function mapIsReady(projection) {
+    if (typeof pack === "undefined" || !pack || !pack.cells) return false;
+    var cells = pack.cells;
+    var cellCount = cells.v && typeof cells.v.length === "number" ? cells.v.length : 0;
+    if (!cellCount) return false;
+
+    var width = typeof graphWidth !== "undefined" ? +graphWidth : 0;
+    var height = typeof graphHeight !== "undefined" ? +graphHeight : 0;
+    if (!isFinite(width) || !isFinite(height) || width <= 0 || height <= 0) return false;
+
+    // The VTT's world projection deliberately treats the full canvas as equirectangular,
+    // so geographic bounds are not needed. FMG's standalone projection still needs them.
+    if (projection === "world") return true;
+    if (typeof mapCoordinates === "undefined" || !mapCoordinates) return false;
+    var coordinateKeys = ["latT", "latN", "lonT", "lonW"];
+    for (var i = 0; i < coordinateKeys.length; i++) {
+      var coordinate = mapCoordinates[coordinateKeys[i]];
+      if (coordinate == null || !isFinite(+coordinate)) return false;
+    }
+    return +mapCoordinates.latT > 0 && +mapCoordinates.lonT > 0;
+  }
+
+  function processViewQueue() {
+    if (viewBusy || !viewQueue.length) return;
+    viewBusy = true;
+    var job = viewQueue.shift();
+    var button = document.getElementById(job.view === "globe" ? "viewGlobe" : "viewStandard");
+    if (!button || typeof button.click !== "function") {
+      protocolError(job.request, "VIEW_UNAVAILABLE", "The requested view control is not available");
+      viewBusy = false;
+      processViewQueue();
+      return;
+    }
+
+    var started = Date.now();
+    var enteredView = false;
+    function waitForView() {
+      if (Date.now() - started > 30000) {
+        protocolError(job.request, "VIEW_TIMEOUT", "The requested view did not finish loading");
+        viewBusy = false;
+        processViewQueue();
+        return;
+      }
+
+      // FMG announces the bridge at DOM ready, while its async initial generation can
+      // still be filling pack. Entering ThreeD before that point creates a blank or
+      // failed globe, so consume the same view timeout while we wait for real map data.
+      if (job.view === "globe" && !mapIsReady(job.projection)) {
+        setTimeout(waitForView, 50);
+        return;
+      }
+
+      if (!enteredView) {
+        if (job.view === "globe" && window.ThreeD && typeof window.ThreeD.setGlobeProjection === "function") {
+          window.ThreeD.setGlobeProjection(job.projection);
+        }
+
+        // The 3D controller marks Globe pressed before its async canvas is ready. Clicking
+        // that pressed control a second time would cancel the load and return to Standard.
+        if (!button.classList.contains("pressed")) button.click();
+        enteredView = true;
+      }
+
+      if (viewIsReady(job.view)) {
+        protocolReply("FMG_VIEW_CHANGED", job.request, { view: job.view, projection: job.projection });
+        viewBusy = false;
+        processViewQueue();
+        return;
+      }
+      setTimeout(waitForView, 50);
+    }
+    waitForView();
+  }
+
+  function handleSetView(ev, data) {
+    if (!isBoundRequest(ev, data)) return;
+    if (!validRequestId(data.requestId)) {
+      protocolError(data, "INVALID_REQUEST", "A valid requestId is required");
+      return;
+    }
+    if (data.view !== "builder" && data.view !== "globe") {
+      protocolError(data, "INVALID_VIEW", "View must be either builder or globe");
+      return;
+    }
+    var projection = data.projection == null ? "geographic" : data.projection;
+    if (projection !== "world" && projection !== "geographic") {
+      protocolError(data, "INVALID_PROJECTION", "Projection must be either world or geographic");
+      return;
+    }
+
+    // Keep the in-flight transition intact, but only retain the latest pending intent.
+    // The host also tracks just its latest requestId, so replying with errors for commands
+    // it has already superseded would be misleading and could surface a stale failure.
+    viewQueue.length = 0;
+    viewQueue.push({ request: data, view: data.view, projection: projection });
+    processViewQueue();
   }
 
   function onRequest(ev) {
     var d = ev && ev.data;
-    if (!d || (d.type !== "FMG_REQUEST_EXPORT" && d.type !== "FMG_REQUEST_IMAGE")) return;
-    var target = ev.source || window.parent;
-    var origin = ev.origin && ev.origin !== "null" ? ev.origin : "*";
-
-    if (d.type === "FMG_REQUEST_IMAGE") {
-      var fmt = d.format === "png" ? "png" : "svg";
-      buildImage(fmt, +d.scale || 1, function (dataUrl, err, W, H) {
-        reply(target, origin, {
-          type: "FMG_IMAGE",
-          format: fmt,
-          dataUrl: dataUrl,
-          width: W,
-          height: H,
-          error: err || undefined
-        });
-      });
+    if (!d || typeof d !== "object") return;
+    if (d.type === "FMG_CONNECT") {
+      handleConnect(ev, d);
       return;
     }
-
-    var payload;
-    try {
-      payload = buildPayload();
-    } catch (e) {
-      reply(target, origin, { type: "FMG_EXPORT", json: null, error: "serialize failed: " + (e && e.message) });
+    if (d.type === "FMG_SET_VIEW") {
+      handleSetView(ev, d);
       return;
     }
-    if (!payload) {
-      reply(target, origin, { type: "FMG_EXPORT", json: null, error: "no map" });
-      return;
-    }
-    var json;
-    try {
-      json = JSON.stringify(payload);
-    } catch (e) {
-      reply(target, origin, { type: "FMG_EXPORT", json: null, error: "stringify failed: " + (e && e.message) });
-      return;
-    }
-    reply(target, origin, { type: "FMG_EXPORT", json: json });
   }
 
   window.addEventListener("message", onRequest, false);
 
   // Announce readiness so a parent frame knows the bridge is live.
   function announce() {
-    if (window.parent && window.parent !== window) reply(window.parent, "*", { type: "FMG_READY" });
+    if (!window.parent || window.parent === window) return;
+    // This pre-connection announcement contains no map or user data. The exact origin
+    // becomes known only when the parent answers with FMG_CONNECT.
+    try {
+      window.parent.postMessage(
+        {
+          type: "FMG_READY",
+          protocol: PROTOCOL_VERSION,
+          capabilities: ["view.switch"]
+        },
+        "*"
+      );
+    } catch (e) {}
   }
   if (document.readyState === "complete" || document.readyState === "interactive") announce();
   else window.addEventListener("DOMContentLoaded", announce, false);
   window.addEventListener("load", announce, false); // a second announce is harmless
 
   // Expose for in-page testing / a future toolbar action.
-  window.VttBridge = { buildPayload: buildPayload, buildImage: buildImage };
+  window.VttBridge = {
+    protocol: PROTOCOL_VERSION,
+    buildPayload: buildPayload,
+    buildImage: buildImage,
+    clampRasterScale: clampRasterScale
+  };
 })();
