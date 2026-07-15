@@ -79,9 +79,12 @@ test.describe("vector globe and settlement maps", () => {
       projection: "globe"
     });
     expect(rendering.maxZoom).toBeGreaterThanOrEqual(11);
+    expect(rendering.contentMaxLatitude).toBeLessThanOrEqual(70);
+    expect(rendering.polarCapDegrees).toBeGreaterThanOrEqual(20);
     expect(rendering.layers).toBeGreaterThanOrEqual(15);
     expect(rendering.sources).toBeGreaterThanOrEqual(9);
     expect(rendering.features.landmasses).toBeGreaterThan(0);
+    expect(rendering.features.polarCaps).toBeGreaterThan(0);
     expect(rendering.features.land).toBeGreaterThan(0);
     expect(rendering.features.land).toBeLessThan(cellCount / 2);
     expect(rendering.features.burgs).toBeGreaterThan(0);

@@ -4,9 +4,9 @@ import { buildVectorGlobeData, mapPointToVectorLngLat } from "./vector-globe-dat
 
 describe("vector globe data", () => {
   it("maps the rectangular FMG extent into a pole-safe longitude and latitude range", () => {
-    expect(mapPointToVectorLngLat([0, 0], 1000, 500)).toEqual([-180, 85]);
+    expect(mapPointToVectorLngLat([0, 0], 1000, 500)).toEqual([-180, 67.5]);
     expect(mapPointToVectorLngLat([500, 250], 1000, 500)).toEqual([0, 0]);
-    expect(mapPointToVectorLngLat([1000, 500], 1000, 500)).toEqual([180, -85]);
+    expect(mapPointToVectorLngLat([1000, 500], 1000, 500)).toEqual([180, -67.5]);
   });
 
   it("keeps routes, rivers and settlements as semantic vector features", () => {
@@ -83,16 +83,32 @@ describe("vector globe data", () => {
     });
 
     expect(data.routes.features[0].geometry.coordinates).toEqual([
-      [-180, 85],
-      [180, -85]
+      [-180, 67.5],
+      [180, -67.5]
     ]);
     expect(data.rivers.features[0].properties.name).toBe("Test River");
+    expect(data.polarCaps.features).toHaveLength(72);
+    expect(
+      data.polarCaps.features.every(
+        feature => feature.properties.kind === "north" || feature.properties.kind === "south"
+      )
+    ).toBe(true);
+    expect(
+      data.polarCaps.features.every(feature => {
+        const ring = feature.geometry.coordinates[0];
+        const signedArea = ring.slice(0, -1).reduce((area, point, index) => {
+          const next = ring[index + 1];
+          return area + point[0] * next[1] - next[0] * point[1];
+        }, 0);
+        return signedArea > 0;
+      })
+    ).toBe(true);
     expect(data.landmasses.features[0].geometry.coordinates[0]).toEqual([
-      [-180, 85],
-      [180, 85],
-      [180, -85],
-      [-180, -85],
-      [-180, 85]
+      [-180, 67.5],
+      [180, 67.5],
+      [180, -67.5],
+      [-180, -67.5],
+      [-180, 67.5]
     ]);
     expect(data.burgs.features[0]).toMatchObject({
       properties: { burgId: 1, name: "Center" },

@@ -2,11 +2,16 @@ import type { Feature, FeatureCollection, LineString, MultiLineString, Point, Po
 import type { PackedGraph } from "../types/PackedGraph";
 import { getIsolines } from "../utils/pathUtils";
 
-export const VECTOR_GLOBE_MAX_LATITUDE = 85;
+// FMG generates a flat world with no real polar topology. Keep its content
+// inside the habitable latitudes and let the globe's ocean background form
+// true caps, instead of crushing the full map width into near-polar spikes.
+export const VECTOR_GLOBE_POLAR_CAP_DEGREES = 22.5;
+export const VECTOR_GLOBE_CONTENT_MAX_LATITUDE = 90 - VECTOR_GLOBE_POLAR_CAP_DEGREES;
 
 type VectorProperties = Record<string, boolean | number | string | null>;
 
 export type VectorGlobeData = {
+  polarCaps: FeatureCollection<Polygon, VectorProperties>;
   landmasses: FeatureCollection<Polygon, VectorProperties>;
   land: FeatureCollection<Polygon, VectorProperties>;
   lakes: FeatureCollection<Polygon, VectorProperties>;
@@ -30,6 +35,43 @@ const collection = <TGeometry extends GeoJSON.Geometry>(
   features: Array<Feature<TGeometry, VectorProperties>>
 ): FeatureCollection<TGeometry, VectorProperties> => ({ type: "FeatureCollection", features });
 
+function getPolarCaps() {
+  const features: Array<Feature<Polygon, VectorProperties>> = [];
+  const longitudeStep = 10;
+  const poleLatitude = 89.999;
+  for (const hemisphere of [1, -1]) {
+    const innerLatitude = VECTOR_GLOBE_CONTENT_MAX_LATITUDE * hemisphere;
+    const outerLatitude = poleLatitude * hemisphere;
+    for (let longitude = -180; longitude < 180; longitude += longitudeStep) {
+      const ring: Array<[number, number]> =
+        hemisphere > 0
+          ? [
+              [longitude, innerLatitude],
+              [longitude + longitudeStep, innerLatitude],
+              [longitude + longitudeStep, outerLatitude],
+              [longitude, outerLatitude],
+              [longitude, innerLatitude]
+            ]
+          : [
+              [longitude, innerLatitude],
+              [longitude, outerLatitude],
+              [longitude + longitudeStep, outerLatitude],
+              [longitude + longitudeStep, innerLatitude],
+              [longitude, innerLatitude]
+            ];
+      features.push({
+        type: "Feature",
+        properties: { kind: hemisphere > 0 ? "north" : "south" },
+        geometry: {
+          type: "Polygon",
+          coordinates: [ring]
+        }
+      });
+    }
+  }
+  return collection(features);
+}
+
 export function mapPointToVectorLngLat(
   point: readonly [number, number],
   width: number,
@@ -37,7 +79,7 @@ export function mapPointToVectorLngLat(
 ): [number, number] {
   const [x, y] = point;
   const longitude = (x / width) * 360 - 180;
-  const latitude = VECTOR_GLOBE_MAX_LATITUDE - (y / height) * VECTOR_GLOBE_MAX_LATITUDE * 2;
+  const latitude = VECTOR_GLOBE_CONTENT_MAX_LATITUDE - (y / height) * VECTOR_GLOBE_CONTENT_MAX_LATITUDE * 2;
   return [longitude, latitude];
 }
 
@@ -300,6 +342,7 @@ export function buildVectorGlobeData(
     }));
 
   return {
+    polarCaps: getPolarCaps(),
     landmasses: collection(landmassFeatures),
     land: collection(landFeatures),
     lakes: collection(lakeFeatures),

@@ -1,7 +1,13 @@
 import maplibregl, { type GeoJSONSource, type Map as MapLibreMap, type StyleSpecification } from "maplibre-gl";
 import "maplibre-gl/dist/maplibre-gl.css";
 import "./vector-globe.css";
-import { buildVectorGlobeData, mapPointToVectorLngLat, type VectorGlobeData } from "./vector-globe-data";
+import {
+  buildVectorGlobeData,
+  mapPointToVectorLngLat,
+  VECTOR_GLOBE_CONTENT_MAX_LATITUDE,
+  VECTOR_GLOBE_POLAR_CAP_DEGREES,
+  type VectorGlobeData
+} from "./vector-globe-data";
 
 const SETTLEMENT_ENTRY_ZOOM = 7.25;
 const VECTOR_GLOBE_MAX_ZOOM = 11.5;
@@ -19,6 +25,7 @@ let vectorPerformanceProfile: "quality" | "low-power" = "quality";
 let vectorPixelRatio = 1;
 
 const SOURCE_IDS = {
+  polarCaps: "fmg-polar-caps",
   landmasses: "fmg-landmasses",
   land: "fmg-land",
   lakes: "fmg-lakes",
@@ -67,6 +74,7 @@ function addGeoJsonSource(id: string, data: GeoJSON.FeatureCollection) {
 }
 
 function addVectorSources(data: VectorGlobeData) {
+  addGeoJsonSource(SOURCE_IDS.polarCaps, data.polarCaps);
   addGeoJsonSource(SOURCE_IDS.landmasses, data.landmasses);
   addGeoJsonSource(SOURCE_IDS.land, data.land);
   addGeoJsonSource(SOURCE_IDS.lakes, data.lakes);
@@ -82,6 +90,16 @@ function addVectorSources(data: VectorGlobeData) {
 function addVectorLayers() {
   if (!vectorMap) return;
 
+  vectorMap.addLayer({
+    id: "fmg-polar-ocean",
+    type: "fill",
+    source: SOURCE_IDS.polarCaps,
+    paint: {
+      "fill-color": getLayerColor("oceanBase", "fill", "#6888b5"),
+      "fill-opacity": 1,
+      "fill-antialias": false
+    }
+  });
   vectorMap.addLayer({
     id: "fmg-landmass-fill",
     type: "fill",
@@ -559,6 +577,7 @@ function setSourceData(id: string, data: GeoJSON.FeatureCollection) {
 }
 
 function applyVectorData(data: VectorGlobeData) {
+  setSourceData(SOURCE_IDS.polarCaps, data.polarCaps);
   setSourceData(SOURCE_IDS.landmasses, data.landmasses);
   setSourceData(SOURCE_IDS.land, data.land);
   setSourceData(SOURCE_IDS.lakes, data.lakes);
@@ -723,6 +742,8 @@ export function getVectorGlobeDiagnostics() {
     stage: vectorStage,
     zoom: vectorMap?.getZoom() || 0,
     maxZoom: VECTOR_GLOBE_MAX_ZOOM,
+    contentMaxLatitude: VECTOR_GLOBE_CONTENT_MAX_LATITUDE,
+    polarCapDegrees: VECTOR_GLOBE_POLAR_CAP_DEGREES,
     dataBuildMs: vectorDataBuildMs,
     performanceProfile: vectorPerformanceProfile,
     pixelRatio: vectorPixelRatio,
@@ -734,6 +755,7 @@ export function getVectorGlobeDiagnostics() {
     features: vectorData
       ? {
           land: vectorData.land.features.length,
+          polarCaps: vectorData.polarCaps.features.length,
           landmasses: vectorData.landmasses.features.length,
           lakes: vectorData.lakes.features.length,
           coastlines: vectorData.coastlines.features.length,
