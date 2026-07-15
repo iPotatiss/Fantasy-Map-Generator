@@ -159,10 +159,9 @@ test.describe("vector globe and settlement maps", () => {
     await expect(page.locator(".fmg-settlement-view")).toBeVisible();
     await expect(page.locator(".fmg-settlement-view__title")).toHaveText(target!.name);
     await expect(page.locator(".fmg-settlement-view iframe")).toHaveAttribute("src", /preview=1/);
-    await expect(page.locator(".fmg-settlement-view")).toHaveAttribute("data-interactive", "false");
+    await expect(page.locator(".fmg-settlement-view")).toHaveAttribute("data-interactive", "true");
 
-    await page.mouse.move(640, 360);
-    await page.mouse.wheel(0, 600);
+    await page.getByRole("button", { name: "Zoom out to region" }).click();
     await expect(page.locator(".fmg-settlement-view")).toHaveCount(0);
     await expect.poll(() => page.evaluate(() => (window as any).ThreeD.getGlobeRenderDiagnostics().zoom)).toBeLessThan(9);
     expect(errors).toEqual([]);

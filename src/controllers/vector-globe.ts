@@ -25,6 +25,8 @@ let vectorSettlementId = 0;
 let vectorSettlementTimer = 0;
 let vectorPreloadedSettlement: HTMLIFrameElement | null = null;
 let vectorPreloadedSettlementId = 0;
+let vectorSettlementExiting = false;
+let vectorMotionDetailPaused = false;
 let vectorStage = "World";
 let vectorDataBuildMs = 0;
 let vectorPerformanceProfile: "quality" | "low-power" = "quality";
@@ -78,7 +80,23 @@ function createEmptyStyle(): StyleSpecification {
 function addGeoJsonSource(id: string, data: GeoJSON.FeatureCollection) {
   // World geometry does not gain information at city scale. Reusing regional
   // tiles avoids tessellating the full globe again during every close zoom.
-  vectorMap?.addSource(id, { type: "geojson", data, tolerance: 0.25, maxzoom: 8 });
+  const lowPower = vectorPerformanceProfile === "low-power";
+  vectorMap?.addSource(id, { type: "geojson", data, tolerance: lowPower ? 0.5 : 0.25, maxzoom: lowPower ? 7 : 8 });
+}
+
+const MOTION_LABEL_LAYERS = ["fmg-state-labels", "fmg-burg-labels", "fmg-marker-labels", "fmg-marker-symbols"];
+const LOW_POWER_MOTION_LAYERS = ["fmg-province-borders", "fmg-trails", "fmg-sea-routes"];
+
+function setMotionDetailPaused(paused: boolean) {
+  if (!vectorMap || paused === vectorMotionDetailPaused || vectorSettlement) return;
+  vectorMotionDetailPaused = paused;
+  const layers =
+    vectorPerformanceProfile === "low-power"
+      ? [...MOTION_LABEL_LAYERS, ...LOW_POWER_MOTION_LAYERS]
+      : MOTION_LABEL_LAYERS;
+  for (const layer of layers) {
+    if (vectorMap.getLayer(layer)) vectorMap.setLayoutProperty(layer, "visibility", paused ? "none" : "visible");
+  }
 }
 
 function addVectorSources(data: VectorGlobeData) {
@@ -523,6 +541,7 @@ export function openVectorSettlement(burgId: number) {
   back.type = "button";
   back.textContent = "← Zoom out to region";
   back.addEventListener("click", () => {
+    vectorSettlementExiting = true;
     closeVectorSettlement();
     vectorMap?.easeTo({ zoom: SETTLEMENT_ENTRY_ZOOM + 0.5, duration: 450 });
   });
@@ -533,15 +552,12 @@ export function openVectorSettlement(burgId: number) {
   inspect.type = "button";
   inspect.textContent = "Settlement details";
   inspect.addEventListener("click", () => openFeatureEditor("burg", burgId));
-  const explore = document.createElement("button");
-  explore.type = "button";
-  explore.textContent = "Interact with town";
   const external = document.createElement("a");
   external.textContent = "Open original ↗";
   external.href = previewData.link || preview;
   external.target = "_blank";
   external.rel = "noopener noreferrer";
-  header.append(back, title, explore, inspect, external);
+  header.append(back, title, inspect, external);
 
   const content = document.createElement("div");
   content.className = "fmg-settlement-view__content";
@@ -560,23 +576,8 @@ export function openVectorSettlement(burgId: number) {
   content.append(clouds);
   view.append(header, content);
   view.dataset.ready = frame.dataset.ready || "false";
-  view.dataset.interactive = "false";
+  view.dataset.interactive = "true";
   view.classList.toggle("fmg-settlement-view--low-power", vectorPerformanceProfile === "low-power");
-  explore.addEventListener("click", () => {
-    const interactive = view.dataset.interactive !== "true";
-    view.dataset.interactive = String(interactive);
-    explore.textContent = interactive ? "Return to zoom controls" : "Interact with town";
-  });
-  view.addEventListener(
-    "wheel",
-    event => {
-      if (view.dataset.interactive === "true" || event.deltaY <= 0) return;
-      event.preventDefault();
-      closeVectorSettlement();
-      vectorMap?.easeTo({ zoom: SETTLEMENT_ENTRY_ZOOM + 0.5, duration: 450 });
-    },
-    { passive: false }
-  );
   vectorContainer.append(view);
   vectorSettlement = view;
   vectorSettlementId = burgId;
@@ -601,6 +602,7 @@ function getBurgNearestCenter(maxDistance = 150) {
 }
 
 function updateSettlementMap() {
+  if (vectorSettlementExiting) return;
   if (!vectorMap || vectorMap.getZoom() < SETTLEMENT_MAP_ZOOM) {
     closeVectorSettlement();
     return;
@@ -695,8 +697,13 @@ function attachInteractions() {
     if (id) openFeatureEditor("marker", id);
   });
   vectorMap.on("zoom", updateHud);
+  vectorMap.on("movestart", () => setMotionDetailPaused(true));
   vectorMap.on("moveend", scheduleSettlementMap);
-  vectorMap.on("zoomend", scheduleSettlementMap);
+  vectorMap.on("moveend", () => setMotionDetailPaused(false));
+  vectorMap.on("zoomend", () => {
+    if ((vectorMap?.getZoom() || 0) < SETTLEMENT_MAP_ZOOM) vectorSettlementExiting = false;
+    scheduleSettlementMap();
+  });
 }
 
 function setSourceData(id: string, data: GeoJSON.FeatureCollection) {
@@ -772,7 +779,7 @@ export async function createVectorGlobe(container: HTMLElement) {
       reduceMotion: lowPowerDevice,
       validateStyle: false,
       canvasContextAttributes: {
-        antialias: !lowPowerDevice,
+        antialias: false,
         powerPreference: lowPowerDevice ? "low-power" : "high-performance"
       }
     });
@@ -834,6 +841,8 @@ export function stopVectorGlobe() {
   vectorDataBuildMs = 0;
   vectorPerformanceProfile = "quality";
   vectorPixelRatio = 1;
+  vectorSettlementExiting = false;
+  vectorMotionDetailPaused = false;
   vectorReady = false;
   vectorStage = "World";
   vectorContainer?.classList.remove("fmg-vector-globe");
@@ -881,6 +890,7 @@ export function getVectorGlobeDiagnostics() {
     settlementPreloadZoom: SETTLEMENT_PRELOAD_ZOOM,
     settlementMapZoom: SETTLEMENT_MAP_ZOOM,
     settlementOpen: Boolean(vectorSettlement),
+    motionDetailPaused: vectorMotionDetailPaused,
     projection: vectorMap?.getProjection()?.type || "globe",
     sources: vectorMap?.getStyle()?.sources ? Object.keys(vectorMap.getStyle().sources).length : 0,
     layers: vectorMap?.getStyle()?.layers?.length || 0,
