@@ -7,6 +7,7 @@ import {
   generateSatelliteTexture
 } from "../renderers/draw-satellite-texture";
 import { minmax, rn, throttle } from "../utils";
+import { getRegionalDetailXSegments, unwrapRegionalDetailX } from "./globe-regional-detail";
 
 let Three!: typeof import("three");
 let threeLoadPromise: Promise<boolean> | null = null;
@@ -99,6 +100,31 @@ type GlobeQualityProfile = {
   maxRenderPixels: number;
 };
 
+type GlobeRegionalDetailBounds = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type GlobeRegionalDetailPlan = {
+  bounds: GlobeRegionalDetailBounds;
+  visibleBounds: GlobeRegionalDetailBounds;
+  visibleWidth: number;
+  visibleHeight: number;
+  baseScreenPixelsPerTexel: number;
+};
+
+type GlobeRegionalDetailRequest = {
+  revision: number;
+  globeRevision: number;
+  bounds: GlobeRegionalDetailBounds;
+  rasterWidth: number;
+  rasterHeight: number;
+  baseScreenPixelsPerTexel: number;
+  sourceTexelsPerScreenPixel: number;
+};
+
 type GlobeFeature = {
   type: "burg" | "marker";
   id: number;
@@ -117,6 +143,9 @@ type GlobeOverlaySprite = THREE.Sprite & {
     mapY: number;
     important?: boolean;
     priority?: number;
+    cssHeight: number;
+    aspect: number;
+    textureKey?: string;
   };
 };
 
@@ -186,6 +215,7 @@ let globeOverlayTextures = new Set<THREE.Texture>();
 let globeOverlayTextureCache = new Map<string, THREE.Texture>();
 let globeOverlayMaterials = new Set<THREE.SpriteMaterial>();
 let globeOverlayMaterialCache = new Map<string, THREE.SpriteMaterial>();
+let globeOverlayCacheRevision = 0;
 let globeRasterSourceSize = { width: 0, height: 0 };
 let globeSvgSnapshot: { revision: number; source: string } | null = null;
 let globeInteractionActive = false;
@@ -193,6 +223,24 @@ let globeViewportOverlaysDirty = false;
 let globeOverlayRestoreTimer = 0;
 let globePendingUpgrade: { revision: number; width: number } | null = null;
 let cancelGlobeUpgradeSchedule: (() => void) | null = null;
+let globeRegionalDetailMesh: THREE.Mesh | null = null;
+let globeRegionalDetailMaterial: THREE.MeshBasicMaterial | null = null;
+let globeRegionalDetailTexture: THREE.Texture | null = null;
+let globeRegionalDetailRevision = 0;
+let globeRegionalDetailCommittedRevision = 0;
+let globeRegionalDetailCommittedGlobeRevision = 0;
+let globeRegionalDetailRenderActive = false;
+let globeRegionalDetailPending = false;
+let globeRegionalDetailBounds: GlobeRegionalDetailBounds | null = null;
+let globeRegionalDetailRasterSize = { width: 0, height: 0 };
+let globeRegionalDetailBaseScreenPixelsPerTexel = 0;
+let globeRegionalDetailSourceTexelsPerScreenPixel = 0;
+let globeRegionalDetailLastRenderMs = 0;
+let globeRegionalDetailPreemptedBaseUpgrade = false;
+let globeRegionalDetailFailedGlobeRevision = 0;
+let globeRegionalDetailSkipReason = "not-evaluated";
+let globeRegionalDetailCameraDistance = 0;
+let cancelGlobeRegionalDetailSchedule: (() => void) | null = null;
 const globeMapObjectUrls = new Set<string>();
 
 const WORLD_POLAR_CAP_DEGREES = 12;
@@ -202,6 +250,14 @@ const MAX_GLOBE_BURG_LABELS = 160;
 const MAX_GLOBE_BURG_ICONS = 500;
 const MAX_GLOBE_MARKERS = 250;
 const MAX_GLOBE_STATE_LABELS = 100;
+const GLOBE_STATE_LABEL_CSS_HEIGHT = 30;
+const GLOBE_BURG_LABEL_CSS_HEIGHT = 24;
+const GLOBE_CAPITAL_LABEL_CSS_HEIGHT = 27;
+const GLOBE_BURG_ICON_CSS_HEIGHT = 28;
+const GLOBE_CAPITAL_ICON_CSS_HEIGHT = 34;
+const GLOBE_MARKER_ICON_CSS_HEIGHT = 42;
+const GLOBE_REGIONAL_DETAIL_PADDING = 0.1;
+const GLOBE_REGIONAL_DETAIL_EDGE_FADE = 0.035;
 
 const context2d = document.createElement("canvas").getContext("2d")!;
 
@@ -247,6 +303,7 @@ const stop = () => {
   cancelGlobeUpgradeSchedule?.();
   cancelGlobeUpgradeSchedule = null;
   globePendingUpgrade = null;
+  disposeGlobeRegionalDetail();
   globeInteractionActive = false;
   globeViewportOverlaysDirty = false;
   if (globeOverlayRestoreTimer) window.clearTimeout(globeOverlayRestoreTimer);
@@ -435,6 +492,11 @@ const setRotation = (speed: number) => {
   const endAnimation = controls.autoRotate && !shouldRotate;
 
   controls.autoRotate = shouldRotate;
+
+  if (options.isGlobe) {
+    if (shouldRotate) disposeGlobeRegionalDetail();
+    else scheduleGlobeRegionalDetail();
+  }
 
   if (startAnimation) animate();
   if (endAnimation) cancelAnimationFrame(animationFrame);
@@ -1157,10 +1219,16 @@ function isMapPointInGlobePolarFade(y: number) {
   const placement = globeTexturePlacement;
   if (!placement?.wrapsEntireGlobe) return false;
 
-  const blendPixels = (WORLD_POLAR_BLEND_DEGREES / 180) * placement.textureHeight;
-  const blendMapFraction = Math.min(0.25, blendPixels / placement.mapHeight);
+  const blendMapFraction = getGlobePolarFadeMapFraction();
   const mapFraction = y / graphHeight;
   return mapFraction < blendMapFraction || mapFraction > 1 - blendMapFraction;
+}
+
+function getGlobePolarFadeMapFraction() {
+  const placement = globeTexturePlacement;
+  if (!placement?.wrapsEntireGlobe) return 0;
+  const blendPixels = (WORLD_POLAR_BLEND_DEGREES / 180) * placement.textureHeight;
+  return Math.min(0.25, blendPixels / placement.mapHeight);
 }
 
 function mapPointToGlobeLocalPosition(x: number, y: number, radius = 1) {
@@ -1235,7 +1303,7 @@ function makeGlobeTextCanvas(text: string, font: string, color: string, fontSize
   ctx.textBaseline = "middle";
   ctx.lineJoin = "round";
   ctx.strokeStyle = "rgba(255, 255, 255, 0.92)";
-  ctx.lineWidth = Math.max(5, fontSize * 0.12);
+  ctx.lineWidth = Math.max(3, fontSize * 0.075);
   ctx.strokeText(safeText, canvas.width / 2, canvas.height / 2);
   ctx.fillStyle = color || "#2b2b35";
   ctx.fillText(safeText, canvas.width / 2, canvas.height / 2);
@@ -1248,15 +1316,42 @@ function makeGlobeBurgCanvas(burg: any) {
   canvas.width = canvas.height = 128;
   const ctx = canvas.getContext("2d")!;
   const capital = Boolean(burg.capital);
+  const group = String(burg.group || (capital ? "capital" : "town"));
+  const isFort = group === "fort";
+  const isReligious = group === "monastery";
+  const isTrading = group === "caravanserai" || group === "trading_post";
 
   ctx.shadowColor = "rgba(0, 0, 0, 0.55)";
   ctx.shadowBlur = 8;
   ctx.beginPath();
-  ctx.arc(64, 64, capital ? 35 : 27, 0, Math.PI * 2);
+  if (isFort) {
+    ctx.rect(31, 31, 66, 66);
+  } else if (isReligious) {
+    ctx.moveTo(55, 25);
+    ctx.lineTo(73, 25);
+    ctx.lineTo(73, 53);
+    ctx.lineTo(101, 53);
+    ctx.lineTo(101, 71);
+    ctx.lineTo(73, 71);
+    ctx.lineTo(73, 103);
+    ctx.lineTo(55, 103);
+    ctx.lineTo(55, 71);
+    ctx.lineTo(27, 71);
+    ctx.lineTo(27, 53);
+    ctx.lineTo(55, 53);
+    ctx.closePath();
+  } else if (isTrading) {
+    ctx.moveTo(64, 23);
+    ctx.lineTo(103, 99);
+    ctx.lineTo(25, 99);
+    ctx.closePath();
+  } else {
+    ctx.arc(64, 64, capital ? 38 : 32, 0, Math.PI * 2);
+  }
   ctx.fillStyle = capital ? "#f6cc56" : "#ffffff";
   ctx.fill();
   ctx.shadowBlur = 0;
-  ctx.lineWidth = capital ? 10 : 8;
+  ctx.lineWidth = capital ? 9 : 8;
   ctx.strokeStyle = "#252530";
   ctx.stroke();
 
@@ -1268,7 +1363,7 @@ function makeGlobeBurgCanvas(burg: any) {
     ctx.fillText("★", 64, 66);
   } else {
     ctx.beginPath();
-    ctx.arc(64, 64, 9, 0, Math.PI * 2);
+    ctx.arc(64, 64, 8, 0, Math.PI * 2);
     ctx.fill();
   }
 
@@ -1314,12 +1409,23 @@ function getGlobeMarkerTextureKey(marker: any) {
   return `marker:${marker.pin || "pin"}:${marker.fill || "#fff"}:${marker.stroke || "#282832"}:${icon}`;
 }
 
+function getGlobeCssPixelsPerScaleUnit() {
+  if (!camera || !Renderer) return 1;
+  const rect = Renderer.domElement.getBoundingClientRect();
+  return Math.max(1, rect.height / (2 * Math.tan((camera.fov * Math.PI) / 360)));
+}
+
+function resizeGlobeOverlaySprite(sprite: GlobeOverlaySprite) {
+  const scaleHeight = sprite.userData.cssHeight / getGlobeCssPixelsPerScaleUnit();
+  sprite.scale.set(scaleHeight * sprite.userData.aspect, scaleHeight, 1);
+}
+
 function createGlobeOverlaySprite(
-  canvas: HTMLCanvasElement,
+  canvasSource: HTMLCanvasElement | (() => HTMLCanvasElement),
   kind: GlobeOverlayKind,
   mapX: number,
   mapY: number,
-  screenHeight: number,
+  cssHeight: number,
   important = false,
   textureKey?: string,
   priority = 0
@@ -1329,6 +1435,12 @@ function createGlobeOverlaySprite(
   if (!position) return null;
 
   let overlayTexture = textureKey ? globeOverlayTextureCache.get(textureKey) : undefined;
+  if (overlayTexture && textureKey) {
+    globeOverlayTextureCache.delete(textureKey);
+    globeOverlayTextureCache.set(textureKey, overlayTexture);
+  }
+  const cachedCanvas = overlayTexture?.image instanceof HTMLCanvasElement ? overlayTexture.image : null;
+  const canvas = cachedCanvas || (typeof canvasSource === "function" ? canvasSource() : canvasSource);
   if (!overlayTexture) {
     overlayTexture = new Three.CanvasTexture(canvas);
     overlayTexture.anisotropy = 1;
@@ -1340,16 +1452,19 @@ function createGlobeOverlaySprite(
   }
 
   let overlayMaterial = textureKey ? globeOverlayMaterialCache.get(textureKey) : undefined;
+  if (overlayMaterial && textureKey) {
+    globeOverlayMaterialCache.delete(textureKey);
+    globeOverlayMaterialCache.set(textureKey, overlayMaterial);
+  }
   if (!overlayMaterial) {
-    const isLabel = kind.endsWith("label");
     overlayMaterial = new Three.SpriteMaterial({
       map: overlayTexture,
       transparent: true,
       alphaTest: 0.08,
-      // A screen-facing label plane can intersect the curved globe near its
-      // edges and lose random letters. Hemisphere culling already keeps
-      // back-side labels hidden, so labels can safely render above the sphere.
-      depthTest: !isLabel,
+      // Hemisphere culling already hides the back side. Rendering all semantic
+      // sprites above the sphere prevents small towns from disappearing into
+      // the curved surface near the edge of the view.
+      depthTest: false,
       depthWrite: false,
       sizeAttenuation: false
     });
@@ -1358,27 +1473,64 @@ function createGlobeOverlaySprite(
   }
   const sprite = new Three.Sprite(overlayMaterial) as GlobeOverlaySprite;
   const aspect = canvas.width / canvas.height;
-  sprite.scale.set(screenHeight * aspect, screenHeight, 1);
   sprite.position.copy(position);
   sprite.renderOrder = kind.endsWith("icon") ? 3 : 2;
-  sprite.userData = { fmgGlobeOverlay: true, kind, mapX, mapY, important, priority };
+  sprite.userData = { fmgGlobeOverlay: true, kind, mapX, mapY, important, priority, cssHeight, aspect, textureKey };
+  if (kind === "burg-label") sprite.center.set(0.5, -0.25);
+  if (kind === "marker-icon") sprite.center.set(0.5, 0);
+  resizeGlobeOverlaySprite(sprite);
   globeOverlays.push(sprite);
   scene.add(sprite);
 
   return sprite;
 }
 
-function deleteGlobeOverlays() {
+function removeGlobeOverlaySprites() {
   for (const overlay of globeOverlays) {
     overlay.parent?.remove(overlay);
   }
+  globeOverlays = [];
+}
+
+function deleteGlobeOverlays() {
+  removeGlobeOverlaySprites();
   for (const overlayMaterial of globeOverlayMaterials) overlayMaterial.dispose();
   for (const overlayTexture of globeOverlayTextures) overlayTexture.dispose();
-  globeOverlays = [];
   globeOverlayTextures = new Set();
   globeOverlayTextureCache = new Map();
   globeOverlayMaterials = new Set();
   globeOverlayMaterialCache = new Map();
+  globeOverlayCacheRevision = 0;
+}
+
+function getGlobeOverlayCacheLimit() {
+  const tier = getGlobeQualityProfile().tier;
+  return tier === "low" ? 256 : tier === "balanced" ? 512 : 768;
+}
+
+function getActiveGlobeOverlayTextureKeys() {
+  return new Set(
+    globeOverlays.map(overlay => overlay.userData.textureKey).filter((key): key is string => Boolean(key))
+  );
+}
+
+function trimGlobeOverlayCache() {
+  const limit = getGlobeOverlayCacheLimit();
+  if (globeOverlayTextureCache.size <= limit) return;
+
+  const activeKeys = getActiveGlobeOverlayTextureKeys();
+  for (const [key, overlayTexture] of globeOverlayTextureCache) {
+    if (globeOverlayTextureCache.size <= limit) break;
+    if (activeKeys.has(key)) continue;
+
+    const overlayMaterial = globeOverlayMaterialCache.get(key);
+    overlayMaterial?.dispose();
+    overlayTexture.dispose();
+    if (overlayMaterial) globeOverlayMaterials.delete(overlayMaterial);
+    globeOverlayTextures.delete(overlayTexture);
+    globeOverlayMaterialCache.delete(key);
+    globeOverlayTextureCache.delete(key);
+  }
 }
 
 function repositionGlobeOverlays() {
@@ -1386,7 +1538,9 @@ function repositionGlobeOverlays() {
     const radius = overlay.userData.kind.endsWith("label") ? 1.012 : 1.018;
     const position = mapPointToGlobeLocalPosition(overlay.userData.mapX, overlay.userData.mapY, radius);
     if (position) overlay.position.copy(position);
+    resizeGlobeOverlaySprite(overlay);
   }
+  trimGlobeOverlayCache();
   updateGlobeOverlayVisibility();
 }
 
@@ -1415,7 +1569,12 @@ function getGlobeViewportCandidates<T>(
 }
 
 function createGlobeOverlays() {
-  deleteGlobeOverlays();
+  if (globeOverlayCacheRevision !== globeTextureRevision) {
+    deleteGlobeOverlays();
+    globeOverlayCacheRevision = globeTextureRevision;
+  } else {
+    removeGlobeOverlaySprites();
+  }
   if (!scene || !globeTexturePlacement) return;
   const overlayLimits = getGlobeOverlayLimits();
 
@@ -1460,14 +1619,15 @@ function createGlobeOverlays() {
       const pole = state.pole!;
 
       const text = stateLabels.select(`#stateLabel${state.i}`)?.text() || state.name;
+      const textureKey = `state-label:${stateFont}:${stateColor}:${text}`;
       createGlobeOverlaySprite(
-        makeGlobeTextCanvas(text, stateFont, stateColor),
+        () => makeGlobeTextCanvas(text, stateFont, stateColor),
         "state-label",
         pole[0],
         pole[1],
-        0.024,
+        GLOBE_STATE_LABEL_CSS_HEIGHT,
         false,
-        undefined,
+        textureKey,
         Number(state.area || state.cells || 0)
       );
     }
@@ -1477,32 +1637,34 @@ function createGlobeOverlays() {
       const group = burg.group ? burgLabels.select(`#${burg.group}`) : null;
       const font = group && !group.empty() ? group.attr("font-family") || "sans-serif" : "sans-serif";
       const color = group && !group.empty() ? group.attr("fill") || "#252530" : "#252530";
+      const textureKey = `burg-label:${font}:${color}:${burg.name || ""}`;
       createGlobeOverlaySprite(
-        makeGlobeTextCanvas(burg.name || "", font, color, 46),
+        () => makeGlobeTextCanvas(burg.name || "", font, color, 46),
         "burg-label",
         burg.x,
         burg.y,
-        0.017,
-        Boolean(burg.capital)
+        burg.capital ? GLOBE_CAPITAL_LABEL_CSS_HEIGHT : GLOBE_BURG_LABEL_CSS_HEIGHT,
+        Boolean(burg.capital),
+        textureKey,
+        Number(burg.population || 0)
       );
     }
   }
 
   if (layerIsOn("toggleBurgIcons")) {
-    const capitalCanvas = makeGlobeBurgCanvas({ capital: true });
-    const burgCanvas = makeGlobeBurgCanvas({ capital: false });
     const visibleBurgIcons = viewportBurgCandidates.slice(0, overlayLimits.burgIcons);
     for (const burg of visibleBurgIcons) {
       if (!document.getElementById(`burg${burg.i}`)) continue;
       const capital = Boolean(burg.capital);
+      const textureKey = `burg-icon:${capital ? "capital" : burg.group || "town"}`;
       createGlobeOverlaySprite(
-        capital ? capitalCanvas : burgCanvas,
+        () => makeGlobeBurgCanvas(burg),
         "burg-icon",
         burg.x,
         burg.y,
-        capital ? 0.018 : 0.014,
+        capital ? GLOBE_CAPITAL_ICON_CSS_HEIGHT : GLOBE_BURG_ICON_CSS_HEIGHT,
         capital,
-        capital ? "burg-capital" : "burg-city"
+        textureKey
       );
     }
   }
@@ -1526,23 +1688,21 @@ function createGlobeOverlays() {
       overlayLimits.markers
     );
 
-    const markerAspectCanvas = document.createElement("canvas");
-    markerAspectCanvas.width = 128;
-    markerAspectCanvas.height = 160;
     for (const marker of markerCandidates) {
       const textureKey = getGlobeMarkerTextureKey(marker);
       createGlobeOverlaySprite(
-        globeOverlayTextureCache.has(textureKey) ? markerAspectCanvas : makeGlobeMarkerCanvas(marker),
+        () => makeGlobeMarkerCanvas(marker),
         "marker-icon",
         marker.x,
         marker.y,
-        0.024,
+        GLOBE_MARKER_ICON_CSS_HEIGHT,
         true,
         textureKey
       );
     }
   }
 
+  trimGlobeOverlayCache();
   updateGlobeOverlayVisibility();
 }
 
@@ -1554,6 +1714,7 @@ function updateGlobeOverlayVisibility() {
   const cameraDistance = cameraPosition.distanceTo(center);
   const rect = Renderer.domElement.getBoundingClientRect();
   const stateLabelCandidates: GlobeOverlaySprite[] = [];
+  const burgLabelCandidates: GlobeOverlaySprite[] = [];
 
   for (const overlay of globeOverlays) {
     const worldPosition = overlay.getWorldPosition(new Three.Vector3());
@@ -1568,29 +1729,39 @@ function updateGlobeOverlayVisibility() {
       overlay.visible = false;
       continue;
     }
-    if (kind === "burg-label") visible &&= cameraDistance < (important ? 3.3 : 2.55);
+    if (kind === "burg-label") {
+      visible &&= cameraDistance < (important ? 3.3 : 2.55);
+      if (visible) burgLabelCandidates.push(overlay);
+      overlay.visible = false;
+      continue;
+    }
     if (kind === "burg-icon" && !important) visible &&= cameraDistance < 3.5;
     overlay.visible = visible;
   }
 
-  // State labels remain fixed-size and readable rather than being stretched
-  // into the globe texture. Cull overlaps in screen space so readability does
-  // not turn into a wall of names on worlds with many kingdoms.
+  // Labels remain fixed-size and readable rather than being stretched into
+  // the globe texture. Keep every town symbol, but cull lower-priority names
+  // in screen space so larger text does not turn into a wall of labels.
   const occupied: Array<{ left: number; right: number; top: number; bottom: number }> = [];
-  const pixelsPerScaleUnit = rect.height / (2 * Math.tan((camera.fov * Math.PI) / 360));
   stateLabelCandidates.sort((a, b) => (b.userData.priority || 0) - (a.userData.priority || 0));
+  burgLabelCandidates.sort(
+    (a, b) =>
+      Number(Boolean(b.userData.important)) - Number(Boolean(a.userData.important)) ||
+      (b.userData.priority || 0) - (a.userData.priority || 0)
+  );
 
-  for (const label of stateLabelCandidates) {
+  for (const label of [...stateLabelCandidates, ...burgLabelCandidates]) {
     const point = projectMapPointToScreen(label.userData.mapX, label.userData.mapY, rect);
     if (!point) continue;
 
-    const height = label.scale.y * pixelsPerScaleUnit * 0.82;
-    const width = label.scale.x * pixelsPerScaleUnit * 0.88;
+    const height = label.userData.cssHeight * 0.82;
+    const width = label.userData.cssHeight * label.userData.aspect * 0.88;
+    const centerY = point.y - (0.5 - label.center.y) * label.userData.cssHeight;
     const bounds = {
       left: point.x - width / 2,
       right: point.x + width / 2,
-      top: point.y - height / 2,
-      bottom: point.y + height / 2
+      top: centerY - height / 2,
+      bottom: centerY + height / 2
     };
     const overlaps = occupied.some(
       other =>
@@ -1633,7 +1804,13 @@ function getVisibleGlobeFeatures() {
         continue;
       }
 
-      features.push({ type: "marker", id: marker.i, x: marker.x, y: marker.y, hitRadius: 24 });
+      features.push({
+        type: "marker",
+        id: marker.i,
+        x: marker.x,
+        y: marker.y,
+        hitRadius: Math.max(22, GLOBE_MARKER_ICON_CSS_HEIGHT / 2 + 6)
+      });
     }
   }
 
@@ -1651,7 +1828,8 @@ function getVisibleGlobeFeatures() {
         continue;
       }
 
-      features.push({ type: "burg", id: burg.i, x: burg.x, y: burg.y, hitRadius: 16 });
+      const iconHeight = burg.capital ? GLOBE_CAPITAL_ICON_CSS_HEIGHT : GLOBE_BURG_ICON_CSS_HEIGHT;
+      features.push({ type: "burg", id: burg.i, x: burg.x, y: burg.y, hitRadius: Math.max(18, iconHeight / 2 + 6) });
     }
   }
 
@@ -1665,7 +1843,7 @@ function getMapDistanceSquared(feature: GlobeFeature, mapPoint: { x: number; y: 
   return dx * dx + dy * dy;
 }
 
-function findGlobeFeature(event: PointerEvent, mapPoint: { x: number; y: number }) {
+function findGlobeFeature(event: PointerEvent, mapPoint: { x: number; y: number } | null) {
   if (!Renderer) return null;
   const rect = Renderer.domElement.getBoundingClientRect();
   const touchMultiplier = event.pointerType === "touch" ? 1.35 : 1;
@@ -1680,7 +1858,7 @@ function findGlobeFeature(event: PointerEvent, mapPoint: { x: number; y: number 
     if (distance > radius) continue;
 
     const score = distance / radius;
-    const mapDistance = getMapDistanceSquared(feature, mapPoint);
+    const mapDistance = mapPoint ? getMapDistanceSquared(feature, mapPoint) : Number.POSITIVE_INFINITY;
     if (!best || score < best.score || (score === best.score && mapDistance < best.mapDistance)) {
       best = { feature, score, mapDistance };
     }
@@ -1736,7 +1914,6 @@ function attachGlobeFeaturePicking(canvas: HTMLCanvasElement) {
     if (globeInteractionActive || globeOverlayRestoreTimer) finishGlobeInteraction();
 
     const mapPoint = getGlobeMapPointFromPointer(event);
-    if (!mapPoint) return;
     const feature = findGlobeFeature(event, mapPoint);
     if (feature) openGlobeFeature(feature);
   };
@@ -1775,6 +1952,10 @@ function resizeGlobeRenderer() {
 
   const { width, height } = getGlobeViewportSize();
   const pixelRatio = getGlobePixelRatio();
+  const sizeChanged =
+    Math.abs(Renderer.getPixelRatio() - pixelRatio) > 0.001 ||
+    Math.abs(Renderer.domElement.width - Math.floor(width * pixelRatio)) > 1 ||
+    Math.abs(Renderer.domElement.height - Math.floor(height * pixelRatio)) > 1;
   Renderer.setPixelRatio(pixelRatio);
   Renderer.setSize(width, height);
 
@@ -1782,8 +1963,14 @@ function resizeGlobeRenderer() {
     camera.aspect = width / height;
     camera.updateProjectionMatrix();
   }
+  for (const overlay of globeOverlays) resizeGlobeOverlaySprite(overlay);
+  if (!globeInteractionActive) updateGlobeOverlayVisibility();
 
   render();
+  if (sizeChanged && isGlobeReady()) {
+    invalidateGlobeRegionalDetail();
+    scheduleGlobeRegionalDetail();
+  }
 }
 
 function attachGlobeResize() {
@@ -1797,10 +1984,22 @@ function attachGlobeResize() {
       resizeGlobeRenderer();
     });
   };
+  const handleVisibilityChange = () => {
+    if (document.hidden) {
+      invalidateGlobeRegionalDetail();
+      cancelGlobeUpgradeSchedule?.();
+      cancelGlobeUpgradeSchedule = null;
+      return;
+    }
+    resizeGlobeRenderer();
+    scheduleGlobeRegionalDetail();
+    schedulePendingGlobeUpgrade();
+  };
 
   window.addEventListener("resize", queueResize);
   window.visualViewport?.addEventListener("resize", queueResize);
   document.addEventListener("fullscreenchange", queueResize);
+  document.addEventListener("visibilitychange", handleVisibilityChange);
 
   const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(queueResize) : null;
   resizeObserver?.observe(document.documentElement);
@@ -1809,6 +2008,7 @@ function attachGlobeResize() {
     window.removeEventListener("resize", queueResize);
     window.visualViewport?.removeEventListener("resize", queueResize);
     document.removeEventListener("fullscreenchange", queueResize);
+    document.removeEventListener("visibilitychange", handleVisibilityChange);
     resizeObserver?.disconnect();
     if (resizeFrame) cancelAnimationFrame(resizeFrame);
   };
@@ -1816,11 +2016,17 @@ function attachGlobeResize() {
 
 function beginGlobeInteraction() {
   if (!globeInteractionActive) globeViewportOverlaysDirty = false;
+  if (controls?.autoRotate) {
+    controls.autoRotate = false;
+    options.rotateGlobe = 0;
+    cancelAnimationFrame(animationFrame);
+  }
   globeInteractionActive = true;
   if (globeOverlayRestoreTimer) window.clearTimeout(globeOverlayRestoreTimer);
   globeOverlayRestoreTimer = 0;
   cancelGlobeUpgradeSchedule?.();
   cancelGlobeUpgradeSchedule = null;
+  invalidateGlobeRegionalDetail();
 
   for (const overlay of globeOverlays) {
     overlay.visible = false;
@@ -1839,6 +2045,7 @@ function finishGlobeInteraction() {
   if (globeViewportOverlaysDirty) createGlobeOverlays();
   else updateGlobeOverlayVisibility();
   globeViewportOverlaysDirty = false;
+  scheduleGlobeRegionalDetail();
   schedulePendingGlobeUpgrade();
   render();
 }
@@ -1854,6 +2061,7 @@ async function newGlobe(canvas: HTMLCanvasElement) {
   detachGlobeResize?.();
   detachGlobeResize = null;
   deleteGlobeOverlays();
+  disposeGlobeRegionalDetail();
 
   const loaded = await loadTHREE();
   if (!loaded) {
@@ -1932,7 +2140,10 @@ async function newGlobe(canvas: HTMLCanvasElement) {
   attachGlobeFeaturePicking(Renderer.domElement);
 
   if (controls.autoRotate) animate();
-  else render();
+  else {
+    render();
+    scheduleGlobeRegionalDetail();
+  }
 
   return true;
 }
@@ -1968,47 +2179,72 @@ function getGlobeOceanColor() {
   return mapOceanColor && !mapOceanColor.startsWith("url(") ? mapOceanColor : options.waterColor;
 }
 
-async function getHighResolutionGlobeMapUrl(width: number, height: number, revision: number) {
-  let source = globeSvgSnapshot?.revision === revision ? globeSvgSnapshot.source : "";
-  let sourceUrl = "";
+const getGlobeMapExportUrl = () =>
+  getMapURL("mesh", {
+    noLabels: true,
+    noPointSymbols: true,
+    noMarkers: true,
+    noIce: true,
+    noScaleBar: true,
+    fullMap: true,
+    noVignette: true
+  });
 
-  if (!source) {
-    sourceUrl = await getMapURL("mesh", {
-      noLabels: true,
-      noPointSymbols: true,
-      noMarkers: true,
-      noIce: true,
-      noScaleBar: true,
-      fullMap: true,
-      noVignette: true
+async function getGlobeSvgSource(revision: number) {
+  if (globeSvgSnapshot?.revision === revision) return globeSvgSnapshot.source;
+
+  const sourceUrl = await getGlobeMapExportUrl();
+  try {
+    const source = await fetch(sourceUrl).then(response => {
+      if (!response.ok) throw new Error(`Cannot read globe SVG: ${response.status}`);
+      return response.text();
     });
-    try {
-      source = await fetch(sourceUrl).then(response => {
-        if (!response.ok) throw new Error(`Cannot read globe SVG: ${response.status}`);
-        return response.text();
-      });
-      if (sourceUrl.startsWith("blob:")) window.URL.revokeObjectURL(sourceUrl);
-      if (revision === globeTextureRevision) globeSvgSnapshot = { revision, source };
-    } catch (error) {
-      console.warn("Cannot cache the globe SVG; using its original render", error);
-      globeRasterSourceSize = { width: graphWidth, height: graphHeight };
-      return sourceUrl;
-    }
+    if (revision === globeTextureRevision) globeSvgSnapshot = { revision, source };
+    return source;
+  } finally {
+    if (sourceUrl.startsWith("blob:")) window.URL.revokeObjectURL(sourceUrl);
+  }
+}
+
+function createGlobeSvgRasterUrl(
+  source: string,
+  width: number,
+  height: number,
+  viewBox: GlobeRegionalDetailBounds = { x: 0, y: 0, width: graphWidth, height: graphHeight }
+) {
+  const openingTag = source.match(/<svg\b[^>]*>/i)?.[0];
+  if (!openingTag) throw new Error("Cannot find the globe SVG root");
+
+  const setAttribute = (tag: string, name: string, value: string) => {
+    const existing = new RegExp(`\\s${name}\\s*=\\s*(?:"[^"]*"|'[^']*')`, "i");
+    return existing.test(tag)
+      ? tag.replace(existing, ` ${name}="${value}"`)
+      : tag.replace(/>$/, ` ${name}="${value}">`);
+  };
+  let rasterTag = setAttribute(openingTag, "width", String(width));
+  rasterTag = setAttribute(rasterTag, "height", String(height));
+  rasterTag = setAttribute(rasterTag, "viewBox", `${viewBox.x} ${viewBox.y} ${viewBox.width} ${viewBox.height}`);
+  rasterTag = setAttribute(rasterTag, "preserveAspectRatio", "none");
+
+  // Rewriting only the root tag avoids parsing and re-serializing the entire
+  // full-map SVG on the main thread for every local crop.
+  const rasterSource = source.replace(openingTag, () => rasterTag);
+  return window.URL.createObjectURL(new Blob([rasterSource], { type: "image/svg+xml;charset=utf-8" }));
+}
+
+async function getHighResolutionGlobeMapUrl(width: number, height: number, revision: number) {
+  let source = "";
+  try {
+    source = await getGlobeSvgSource(revision);
+  } catch (error) {
+    console.warn("Cannot cache the globe SVG; using its original render", error);
+    globeRasterSourceSize = { width: graphWidth, height: graphHeight };
+    return getGlobeMapExportUrl();
   }
 
   try {
-    const documentNode = new DOMParser().parseFromString(source, "image/svg+xml");
-    if (documentNode.querySelector("parsererror")) throw new Error("Cannot parse globe SVG");
-
-    const svgRoot = documentNode.documentElement;
-    svgRoot.setAttribute("width", String(width));
-    svgRoot.setAttribute("height", String(height));
-    svgRoot.setAttribute("viewBox", `0 0 ${graphWidth} ${graphHeight}`);
-    svgRoot.setAttribute("preserveAspectRatio", "none");
-
-    const serialized = new XMLSerializer().serializeToString(svgRoot);
     globeRasterSourceSize = { width, height };
-    return window.URL.createObjectURL(new Blob([serialized], { type: "image/svg+xml;charset=utf-8" }));
+    return createGlobeSvgRasterUrl(source, width, height);
   } catch (error) {
     console.warn("Cannot prepare a high-resolution globe texture; using the regular map render", error);
     globeRasterSourceSize = { width: graphWidth, height: graphHeight };
@@ -2052,8 +2288,525 @@ function drawWorldMapWithPolarCaps(
   layer.height = 1;
 }
 
+function cancelScheduledGlobeRegionalDetail() {
+  cancelGlobeRegionalDetailSchedule?.();
+  cancelGlobeRegionalDetailSchedule = null;
+}
+
+function invalidateGlobeRegionalDetail() {
+  globeRegionalDetailRevision++;
+  globeRegionalDetailPending = false;
+  globeRegionalDetailCommittedRevision = 0;
+  cancelScheduledGlobeRegionalDetail();
+  if (globeRegionalDetailMesh) globeRegionalDetailMesh.visible = false;
+}
+
+function disposeGlobeRegionalDetail() {
+  invalidateGlobeRegionalDetail();
+  globeRegionalDetailMesh?.parent?.remove(globeRegionalDetailMesh);
+  globeRegionalDetailMesh?.geometry.dispose();
+  globeRegionalDetailMaterial?.dispose();
+  globeRegionalDetailTexture?.dispose();
+  globeRegionalDetailMesh = null;
+  globeRegionalDetailMaterial = null;
+  globeRegionalDetailTexture = null;
+  globeRegionalDetailCommittedGlobeRevision = 0;
+  globeRegionalDetailBounds = null;
+  globeRegionalDetailRasterSize = { width: 0, height: 0 };
+  globeRegionalDetailBaseScreenPixelsPerTexel = 0;
+  globeRegionalDetailSourceTexelsPerScreenPixel = 0;
+  globeRegionalDetailLastRenderMs = 0;
+}
+
+function getGlobeMapPointFromNdc(x: number, y: number) {
+  if (!camera || !globeMesh || !globeTexturePlacement) return null;
+
+  raycaster ||= new Three.Raycaster();
+  raycaster.setFromCamera(new Three.Vector2(x, y), camera);
+  const intersection = raycaster.intersectObject(globeMesh, false)[0];
+  if (!intersection?.uv) return null;
+  return globeUvToMapPoint(intersection.uv.x, intersection.uv.y);
+}
+
+function getVisibleGlobeRegionalDetailPlan(): GlobeRegionalDetailPlan | null {
+  if (!camera || !globeMesh || !globeTexturePlacement) {
+    globeRegionalDetailSkipReason = "globe-not-ready";
+    return null;
+  }
+
+  const center = globeMesh.getWorldPosition(new Three.Vector3());
+  const cameraDistance = camera.getWorldPosition(new Three.Vector3()).distanceTo(center);
+  globeRegionalDetailCameraDistance = cameraDistance;
+
+  const samples: Array<{ point: { x: number; y: number }; distance: number }> = [];
+  const ndcXs = Array.from({ length: 11 }, (_, column) => -0.985 + (column / 10) * 1.97);
+  const ndcYs = Array.from({ length: 9 }, (_, row) => -0.985 + (row / 8) * 1.97);
+  const sampleGrid: Array<Array<{ x: number; y: number } | null>> = [];
+  const getEligiblePoint = (ndcX: number, ndcY: number) => {
+    const point = getGlobeMapPointFromNdc(ndcX, ndcY);
+    return point && !isMapPointInGlobePolarFade(point.y) ? point : null;
+  };
+  const addSample = (point: { x: number; y: number }, ndcX: number, ndcY: number) => {
+    samples.push({ point, distance: ndcX * ndcX + ndcY * ndcY });
+  };
+  // Sampling the viewport instead of using a rectangular camera estimate
+  // keeps the requested source region tight even close to the horizon.
+  for (let row = 0; row < ndcYs.length; row++) {
+    const sampleRow: Array<{ x: number; y: number } | null> = [];
+    for (let column = 0; column < ndcXs.length; column++) {
+      const point = getEligiblePoint(ndcXs[column], ndcYs[row]);
+      sampleRow.push(point);
+      if (point) addSample(point, ndcXs[column], ndcYs[row]);
+    }
+    sampleGrid.push(sampleRow);
+  }
+
+  // Wherever the coarse grid crosses the sphere silhouette (or the polar
+  // exclusion), bisect the hit/miss edge. This avoids exposing a feather line
+  // between grid samples on large and high-DPI screens without inflating every
+  // crop and breaking the low-memory pixel budget.
+  const addBoundarySample = (
+    ax: number,
+    ay: number,
+    aPoint: { x: number; y: number } | null,
+    bx: number,
+    by: number,
+    bPoint: { x: number; y: number } | null
+  ) => {
+    if (Boolean(aPoint) === Boolean(bPoint)) return;
+    let hit = aPoint ? { x: ax, y: ay, point: aPoint } : { x: bx, y: by, point: bPoint! };
+    let miss = aPoint ? { x: bx, y: by } : { x: ax, y: ay };
+    for (let step = 0; step < 6; step++) {
+      const x = (hit.x + miss.x) / 2;
+      const y = (hit.y + miss.y) / 2;
+      const point = getEligiblePoint(x, y);
+      if (point) hit = { x, y, point };
+      else miss = { x, y };
+    }
+    addSample(hit.point, hit.x, hit.y);
+  };
+
+  for (let row = 0; row < ndcYs.length; row++) {
+    for (let column = 0; column < ndcXs.length - 1; column++) {
+      addBoundarySample(
+        ndcXs[column],
+        ndcYs[row],
+        sampleGrid[row][column],
+        ndcXs[column + 1],
+        ndcYs[row],
+        sampleGrid[row][column + 1]
+      );
+    }
+  }
+  for (let row = 0; row < ndcYs.length - 1; row++) {
+    for (let column = 0; column < ndcXs.length; column++) {
+      addBoundarySample(
+        ndcXs[column],
+        ndcYs[row],
+        sampleGrid[row][column],
+        ndcXs[column],
+        ndcYs[row + 1],
+        sampleGrid[row + 1][column]
+      );
+    }
+  }
+
+  if (!samples.length) {
+    globeRegionalDetailSkipReason = "map-outside-viewport";
+    return null;
+  }
+
+  samples.sort((a, b) => a.distance - b.distance);
+  const anchorPoint = samples[0].point;
+  const wrapsEntireGlobe = globeTexturePlacement.wrapsEntireGlobe;
+
+  const xs = samples.map(sample => unwrapRegionalDetailX(sample.point.x, anchorPoint.x, graphWidth, wrapsEntireGlobe));
+  const ys = samples.map(sample => sample.point.y);
+  let minX = Math.min(...xs);
+  let maxX = Math.max(...xs);
+  let minY = Math.min(...ys);
+  let maxY = Math.max(...ys);
+
+  const visibleWidth = Math.max(graphWidth * 0.008, maxX - minX);
+  const visibleHeight = Math.max(graphHeight * 0.008, maxY - minY);
+  const visibleBounds = { x: minX, y: minY, width: visibleWidth, height: visibleHeight };
+  const rect = Renderer.domElement.getBoundingClientRect();
+  const renderPixelRatio = Renderer.getPixelRatio();
+  const baseVisibleTextureWidth = (visibleWidth / graphWidth) * globeTexturePlacement.mapWidth;
+  const baseVisibleTextureHeight = (visibleHeight / graphHeight) * globeTexturePlacement.mapHeight;
+  const baseScreenPixelsPerTexel = Math.max(
+    (rect.width * renderPixelRatio) / Math.max(1, baseVisibleTextureWidth),
+    (rect.height * renderPixelRatio) / Math.max(1, baseVisibleTextureHeight)
+  );
+  if (baseScreenPixelsPerTexel <= 1.25) {
+    globeRegionalDetailSkipReason = "base-texture-sufficient";
+    return null;
+  }
+
+  const paddingX = Math.max(graphWidth * 0.012, visibleWidth * GLOBE_REGIONAL_DETAIL_PADDING);
+  const paddingY = Math.max(graphHeight * 0.012, visibleHeight * GLOBE_REGIONAL_DETAIL_PADDING);
+  minX -= paddingX;
+  maxX += paddingX;
+  if (!wrapsEntireGlobe) {
+    minX = Math.max(0, minX);
+    maxX = Math.min(graphWidth, maxX);
+  }
+  const polarFadeMargin = getGlobePolarFadeMapFraction() * graphHeight;
+  minY = Math.max(polarFadeMargin, minY - paddingY);
+  maxY = Math.min(graphHeight - polarFadeMargin, maxY + paddingY);
+
+  const width = maxX - minX;
+  const height = maxY - minY;
+  // A regional render is valuable only when it materially increases the
+  // source-pixel density over the global texture. Near a pole or at a wide
+  // zoom the global fallback is both cheaper and visually equivalent.
+  if (width <= 0 || height <= 0 || width > graphWidth * 0.72 || height > graphHeight * 0.78) {
+    globeRegionalDetailSkipReason = "region-too-wide";
+    return null;
+  }
+
+  globeRegionalDetailSkipReason = "eligible";
+
+  return {
+    bounds: { x: minX, y: minY, width, height },
+    visibleBounds,
+    visibleWidth,
+    visibleHeight,
+    baseScreenPixelsPerTexel
+  };
+}
+
+function getGlobeRegionalDetailRasterSize(plan: GlobeRegionalDetailPlan) {
+  const profile = getGlobeQualityProfile();
+  const { width: viewportWidth, height: viewportHeight } = getGlobeViewportSize();
+  const tierSettings =
+    profile.tier === "low"
+      ? { maxDimension: 1792, maxPixels: 2_000_000, targetDensity: 1.25 }
+      : profile.tier === "balanced"
+        ? { maxDimension: 2560, maxPixels: 4_000_000, targetDensity: 1.65 }
+        : { maxDimension: 3072, maxPixels: 7_000_000, targetDensity: 2 };
+
+  const gutterScaleX = plan.bounds.width / plan.visibleWidth;
+  const gutterScaleY = plan.bounds.height / plan.visibleHeight;
+  const renderPixelRatio = Renderer.getPixelRatio();
+  let width = minmax(
+    Math.round(viewportWidth * renderPixelRatio * gutterScaleX * tierSettings.targetDensity),
+    1024,
+    tierSettings.maxDimension
+  );
+  let height = minmax(
+    Math.round(viewportHeight * renderPixelRatio * gutterScaleY * tierSettings.targetDensity),
+    768,
+    tierSettings.maxDimension
+  );
+  const dimensionScale = Math.min(1, tierSettings.maxDimension / width, tierSettings.maxDimension / height);
+  const pixelScale = Math.min(1, Math.sqrt(tierSettings.maxPixels / Math.max(1, width * height)));
+  const scale = Math.min(dimensionScale, pixelScale);
+  width = Math.max(512, Math.round(width * scale));
+  height = Math.max(512, Math.round(height * scale));
+  const sourceTexelsPerScreenPixel = Math.min(
+    width / Math.max(1, viewportWidth * renderPixelRatio * gutterScaleX),
+    height / Math.max(1, viewportHeight * renderPixelRatio * gutterScaleY)
+  );
+  return { width, height, sourceTexelsPerScreenPixel };
+}
+
+function reuseGlobeRegionalDetailIfCovered(plan: GlobeRegionalDetailPlan) {
+  if (
+    !globeRegionalDetailMesh ||
+    !globeRegionalDetailTexture ||
+    !globeRegionalDetailBounds ||
+    globeRegionalDetailCommittedGlobeRevision !== globeTextureRevision
+  ) {
+    return false;
+  }
+
+  const current = globeRegionalDetailBounds;
+  const visible = { ...plan.visibleBounds };
+  if (globeTexturePlacement?.wrapsEntireGlobe) {
+    const currentCenter = current.x + current.width / 2;
+    const visibleCenter = visible.x + visible.width / 2;
+    visible.x += Math.round((currentCenter - visibleCenter) / graphWidth) * graphWidth;
+  }
+
+  const insetX = current.width * (GLOBE_REGIONAL_DETAIL_EDGE_FADE + 0.01);
+  const insetY = current.height * (GLOBE_REGIONAL_DETAIL_EDGE_FADE + 0.01);
+  const isCovered =
+    visible.x >= current.x + insetX &&
+    visible.x + visible.width <= current.x + current.width - insetX &&
+    visible.y >= current.y + insetY &&
+    visible.y + visible.height <= current.y + current.height - insetY;
+  if (!isCovered) return false;
+
+  const { width: viewportWidth, height: viewportHeight } = getGlobeViewportSize();
+  const renderPixelRatio = Renderer.getPixelRatio();
+  const sourceTexelsPerScreenPixel = Math.min(
+    globeRegionalDetailRasterSize.width /
+      Math.max(1, viewportWidth * renderPixelRatio * (current.width / visible.width)),
+    globeRegionalDetailRasterSize.height /
+      Math.max(1, viewportHeight * renderPixelRatio * (current.height / visible.height))
+  );
+  if (sourceTexelsPerScreenPixel < 1.15) return false;
+
+  globeRegionalDetailMesh.visible = true;
+  globeRegionalDetailCommittedRevision = globeRegionalDetailRevision;
+  globeRegionalDetailBaseScreenPixelsPerTexel = plan.baseScreenPixelsPerTexel;
+  globeRegionalDetailSourceTexelsPerScreenPixel = sourceTexelsPerScreenPixel;
+  globeRegionalDetailSkipReason = "reused-covered-crop";
+  render();
+  return true;
+}
+
+function loadGlobeRegionalDetailImage(url: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.decoding = "async";
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("The regional globe detail could not be decoded"));
+    image.src = url;
+  });
+}
+
+function applyGlobeRegionalDetailEdgeFade(ctx: CanvasRenderingContext2D) {
+  const fade = GLOBE_REGIONAL_DETAIL_EDGE_FADE;
+  ctx.save();
+  ctx.globalCompositeOperation = "destination-in";
+
+  const horizontal = ctx.createLinearGradient(0, 0, ctx.canvas.width, 0);
+  horizontal.addColorStop(0, "rgba(255,255,255,0)");
+  horizontal.addColorStop(fade, "rgba(255,255,255,1)");
+  horizontal.addColorStop(1 - fade, "rgba(255,255,255,1)");
+  horizontal.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = horizontal;
+  ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+
+  const vertical = ctx.createLinearGradient(0, 0, 0, ctx.canvas.height);
+  vertical.addColorStop(0, "rgba(255,255,255,0)");
+  vertical.addColorStop(fade, "rgba(255,255,255,1)");
+  vertical.addColorStop(1 - fade, "rgba(255,255,255,1)");
+  vertical.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = vertical;
+  ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  ctx.restore();
+}
+
+function isCurrentGlobeRegionalDetailRequest(request: GlobeRegionalDetailRequest) {
+  return (
+    options.isOn &&
+    options.isGlobe &&
+    !document.hidden &&
+    !globeInteractionActive &&
+    request.revision === globeRegionalDetailRevision &&
+    request.globeRevision === globeTextureRevision &&
+    request.globeRevision === globeTextureCommittedRevision
+  );
+}
+
+async function renderGlobeRegionalDetail(request: GlobeRegionalDetailRequest) {
+  if (globeRegionalDetailRenderActive) {
+    globeRegionalDetailPending = true;
+    return;
+  }
+
+  globeRegionalDetailRenderActive = true;
+  const startedAt = performance.now();
+  try {
+    const source = await getGlobeSvgSource(request.globeRevision);
+    if (!isCurrentGlobeRegionalDetailRequest(request)) return;
+
+    const canvas = document.createElement("canvas");
+    canvas.width = request.rasterWidth;
+    canvas.height = request.rasterHeight;
+    const ctx = canvas.getContext("2d")!;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+
+    const xStart = request.bounds.x;
+    const xSegments = getRegionalDetailXSegments(
+      xStart,
+      request.bounds.width,
+      graphWidth,
+      Boolean(globeTexturePlacement?.wrapsEntireGlobe)
+    );
+
+    // A close viewport can straddle the longitude seam. Render each wrapped
+    // SVG segment into one canvas so there is no missing strip at the seam.
+    for (const segment of xSegments) {
+      const { unwrappedStart, unwrappedEnd } = segment;
+      const segmentWidth = unwrappedEnd - unwrappedStart;
+      if (segmentWidth <= 0) continue;
+
+      const outputX = Math.round(((unwrappedStart - xStart) / request.bounds.width) * request.rasterWidth);
+      const outputEnd = Math.round(((unwrappedEnd - xStart) / request.bounds.width) * request.rasterWidth);
+      const outputWidth = Math.max(1, outputEnd - outputX);
+      const sourceBounds = {
+        x: segment.sourceX,
+        y: request.bounds.y,
+        width: segmentWidth,
+        height: request.bounds.height
+      };
+      const url = createGlobeSvgRasterUrl(source, outputWidth, request.rasterHeight, sourceBounds);
+      try {
+        const image = await loadGlobeRegionalDetailImage(url);
+        if (!isCurrentGlobeRegionalDetailRequest(request)) return;
+        ctx.drawImage(image, outputX, 0, outputWidth, request.rasterHeight);
+        image.src = "";
+      } finally {
+        window.URL.revokeObjectURL(url);
+      }
+    }
+
+    if (!isCurrentGlobeRegionalDetailRequest(request) || !globeTexturePlacement) return;
+    applyGlobeRegionalDetailEdgeFade(ctx);
+
+    const nextTexture = new Three.CanvasTexture(canvas);
+    nextTexture.anisotropy = getGlobeAnisotropy();
+    nextTexture.minFilter = Three.LinearFilter;
+    nextTexture.magFilter = Three.LinearFilter;
+    nextTexture.generateMipmaps = false;
+
+    const placement = globeTexturePlacement;
+    const phiStart =
+      ((placement.dx + (request.bounds.x / graphWidth) * placement.mapWidth) / placement.textureWidth) * Math.PI * 2;
+    const phiLength = ((request.bounds.width / graphWidth) * placement.mapWidth * Math.PI * 2) / placement.textureWidth;
+    const thetaStart =
+      ((placement.dy + (request.bounds.y / graphHeight) * placement.mapHeight) / placement.textureHeight) * Math.PI;
+    const thetaLength =
+      ((request.bounds.height / graphHeight) * placement.mapHeight * Math.PI) / placement.textureHeight;
+    const widthSegments = minmax(Math.ceil((phiLength / (Math.PI * 2)) * 256), 16, 96);
+    const heightSegments = minmax(Math.ceil((thetaLength / Math.PI) * 256), 12, 72);
+    const nextGeometry = new Three.SphereGeometry(
+      1.003,
+      widthSegments,
+      heightSegments,
+      phiStart,
+      phiLength,
+      thetaStart,
+      thetaLength
+    );
+
+    if (!isCurrentGlobeRegionalDetailRequest(request)) {
+      nextGeometry.dispose();
+      nextTexture.dispose();
+      return;
+    }
+
+    globeRegionalDetailTexture?.dispose();
+    globeRegionalDetailTexture = nextTexture;
+    if (!globeRegionalDetailMaterial) {
+      globeRegionalDetailMaterial = new Three.MeshBasicMaterial({
+        transparent: true,
+        alphaTest: 0.015,
+        depthTest: true,
+        depthWrite: false
+      });
+    }
+    globeRegionalDetailMaterial.map = nextTexture;
+    globeRegionalDetailMaterial.needsUpdate = true;
+
+    if (globeRegionalDetailMesh) {
+      globeRegionalDetailMesh.parent?.remove(globeRegionalDetailMesh);
+      globeRegionalDetailMesh.geometry.dispose();
+    }
+    globeRegionalDetailMesh = new Three.Mesh(nextGeometry, globeRegionalDetailMaterial);
+    globeRegionalDetailMesh.userData.fmgGlobeRegionalDetail = true;
+    globeRegionalDetailMesh.renderOrder = 1;
+    globeRegionalDetailMesh.visible = true;
+    scene.add(globeRegionalDetailMesh);
+    globeRegionalDetailBounds = request.bounds;
+    globeRegionalDetailRasterSize = { width: request.rasterWidth, height: request.rasterHeight };
+    globeRegionalDetailBaseScreenPixelsPerTexel = request.baseScreenPixelsPerTexel;
+    globeRegionalDetailSourceTexelsPerScreenPixel = request.sourceTexelsPerScreenPixel;
+    globeRegionalDetailCommittedRevision = request.revision;
+    globeRegionalDetailCommittedGlobeRevision = request.globeRevision;
+    globeRegionalDetailFailedGlobeRevision = 0;
+    render();
+  } catch (error) {
+    if (request.revision === globeRegionalDetailRevision) {
+      globeRegionalDetailFailedGlobeRevision = request.globeRevision;
+      console.warn("Cannot render close-up globe detail; keeping the global texture", error);
+    }
+  } finally {
+    globeRegionalDetailLastRenderMs = performance.now() - startedAt;
+    globeRegionalDetailRenderActive = false;
+    if (globeRegionalDetailFailedGlobeRevision === request.globeRevision) schedulePendingGlobeUpgrade();
+    if (globeRegionalDetailPending) {
+      globeRegionalDetailPending = false;
+      scheduleGlobeRegionalDetail();
+    }
+  }
+}
+
+function scheduleGlobeRegionalDetail() {
+  cancelScheduledGlobeRegionalDetail();
+  if (document.hidden || !isGlobeReady() || globeInteractionActive || !camera) return;
+  if (controls?.autoRotate) {
+    disposeGlobeRegionalDetail();
+    return;
+  }
+
+  const plan = getVisibleGlobeRegionalDetailPlan();
+  if (!plan) {
+    disposeGlobeRegionalDetail();
+    return;
+  }
+
+  // At close zoom the visible crop is both sharper and cheaper than finishing
+  // a multi-megapixel whole-world upgrade. Keep the preview as a fallback and
+  // leave that global upgrade queued until the user returns to a wide view.
+  if (
+    globePendingUpgrade ||
+    cancelGlobeUpgradeSchedule ||
+    globeTexturePlacement?.textureWidth !== getGlobeTargetTextureWidth()
+  ) {
+    globeRegionalDetailPreemptedBaseUpgrade = true;
+  }
+  cancelGlobeUpgradeSchedule?.();
+  cancelGlobeUpgradeSchedule = null;
+
+  if (reuseGlobeRegionalDetailIfCovered(plan)) return;
+
+  const rasterSize = getGlobeRegionalDetailRasterSize(plan);
+  const request: GlobeRegionalDetailRequest = {
+    revision: ++globeRegionalDetailRevision,
+    globeRevision: globeTextureRevision,
+    bounds: plan.bounds,
+    rasterWidth: rasterSize.width,
+    rasterHeight: rasterSize.height,
+    baseScreenPixelsPerTexel: plan.baseScreenPixelsPerTexel,
+    sourceTexelsPerScreenPixel: rasterSize.sourceTexelsPerScreenPixel
+  };
+  if (globeRegionalDetailMesh) globeRegionalDetailMesh.visible = false;
+
+  const begin = () => {
+    cancelGlobeRegionalDetailSchedule = null;
+    if (!isCurrentGlobeRegionalDetailRequest(request)) return;
+    void renderGlobeRegionalDetail(request);
+  };
+  const idleWindow = window as typeof window & {
+    requestIdleCallback?: (callback: () => void, options?: { timeout: number }) => number;
+    cancelIdleCallback?: (id: number) => void;
+  };
+
+  if (idleWindow.requestIdleCallback) {
+    const id = idleWindow.requestIdleCallback(begin, { timeout: 900 });
+    cancelGlobeRegionalDetailSchedule = () => idleWindow.cancelIdleCallback?.(id);
+  } else {
+    const id = window.setTimeout(begin, 260);
+    cancelGlobeRegionalDetailSchedule = () => window.clearTimeout(id);
+  }
+}
+
+function shouldDeferGlobeUpgradeForRegionalDetail() {
+  if (globeRegionalDetailFailedGlobeRevision === globeTextureRevision) return false;
+  if (globeInteractionActive || cancelGlobeRegionalDetailSchedule || globeRegionalDetailRenderActive) return true;
+  if (isGlobeRegionalDetailReady()) return true;
+  return Boolean(getVisibleGlobeRegionalDetailPlan());
+}
+
 function schedulePendingGlobeUpgrade() {
-  if (globeInteractionActive || cancelGlobeUpgradeSchedule || !globePendingUpgrade) return;
+  if (document.hidden || globeInteractionActive || cancelGlobeUpgradeSchedule || !globePendingUpgrade) return;
+  if (shouldDeferGlobeUpgradeForRegionalDetail()) return;
 
   const runUpgrade = () => {
     cancelGlobeUpgradeSchedule = null;
@@ -2087,6 +2840,7 @@ function updateGlobeTexure() {
   cancelGlobeUpgradeSchedule?.();
   cancelGlobeUpgradeSchedule = null;
   globePendingUpgrade = null;
+  disposeGlobeRegionalDetail();
 
   const profile = getGlobeQualityProfile();
   const targetWidth = getGlobeTargetTextureWidth();
@@ -2096,6 +2850,8 @@ function updateGlobeTexure() {
   globeTextureCommittedRevision = 0;
   globeTextureCommittedQuality = 0;
   globeTextureUpgradeFailed = false;
+  globeRegionalDetailPreemptedBaseUpgrade = false;
+  globeRegionalDetailFailedGlobeRevision = 0;
   options.resolution = resolutionScaleToGlobeMultiplier(targetWidth);
 
   void renderGlobeTexturePass(previewWidth, revision, 1, targetWidth);
@@ -2165,6 +2921,7 @@ async function renderGlobeTexturePass(width: number, revision: number, qualityRa
     if (globeTextureCommittedQuality > 0) {
       globeTextureUpgradeFailed = true;
       console.warn("Cannot upgrade globe texture quality", error);
+      if (!globeInteractionActive) scheduleGlobeRegionalDetail();
       return;
     }
     globeTextureCommittedRevision = 0;
@@ -2176,6 +2933,10 @@ async function renderGlobeTexturePass(width: number, revision: number, qualityRa
     try {
       await backgroundReady;
       if (revision !== globeTextureRevision || qualityRank < globeTextureCommittedQuality) return;
+      if (qualityRank > 1 && document.hidden) {
+        queueGlobeTextureUpgrade(revision, width);
+        return;
+      }
       if (qualityRank > 1 && globeInteractionActive) {
         queueGlobeTextureUpgrade(revision, width);
         return;
@@ -2199,8 +2960,8 @@ async function renderGlobeTexturePass(width: number, revision: number, qualityRa
       else repositionGlobeOverlays();
       globeTextureCommittedRevision = revision;
       globeTextureCommittedQuality = qualityRank;
-      if (isFinalQuality && globeSvgSnapshot?.revision === revision) globeSvgSnapshot = null;
       render();
+      if (!globeInteractionActive) scheduleGlobeRegionalDetail();
       if (qualityRank === 1 && targetWidth > width) queueGlobeTextureUpgrade(revision, targetWidth);
     } catch (error) {
       failTextureUpdate(error);
@@ -2274,6 +3035,14 @@ const isGlobeSettled = () =>
       (globeTexturePlacement?.textureWidth === getGlobeTargetTextureWidth() || globeTextureUpgradeFailed) &&
       !globePendingUpgrade &&
       !cancelGlobeUpgradeSchedule
+  );
+
+const isGlobeRegionalDetailReady = () =>
+  Boolean(
+    globeRegionalDetailMesh?.visible &&
+      globeRegionalDetailTexture &&
+      globeRegionalDetailCommittedRevision === globeRegionalDetailRevision &&
+      !globeInteractionActive
   );
 
 // render 3d scene and camera, do only on controls change
@@ -2504,6 +3273,35 @@ const getGlobeRenderDiagnostics = () => {
     rasterSourceWidth: globeRasterSourceSize.width,
     rasterSourceHeight: globeRasterSourceSize.height,
     zoomSpeed: controls?.zoomSpeed ?? 0,
+    overlayTextureCount: globeOverlayTextures.size,
+    overlayCacheLimit: getGlobeOverlayCacheLimit(),
+    activeOverlayTextureCount: getActiveGlobeOverlayTextureKeys().size,
+    overlaySizing: {
+      stateLabelBoxCssPixels: GLOBE_STATE_LABEL_CSS_HEIGHT,
+      burgLabelBoxCssPixels: GLOBE_BURG_LABEL_CSS_HEIGHT,
+      capitalLabelBoxCssPixels: GLOBE_CAPITAL_LABEL_CSS_HEIGHT,
+      burgLabelGlyphCssPixels: GLOBE_BURG_LABEL_CSS_HEIGHT / 1.45,
+      burgIconBoxCssPixels: GLOBE_BURG_ICON_CSS_HEIGHT,
+      capitalIconBoxCssPixels: GLOBE_CAPITAL_ICON_CSS_HEIGHT,
+      markerIconBoxCssPixels: GLOBE_MARKER_ICON_CSS_HEIGHT
+    },
+    regionalDetail: {
+      active: isGlobeRegionalDetailReady(),
+      visible: Boolean(globeRegionalDetailMesh?.visible),
+      scheduled: Boolean(cancelGlobeRegionalDetailSchedule),
+      rendering: globeRegionalDetailRenderActive,
+      rerenderPending: globeRegionalDetailPending,
+      skipReason: globeRegionalDetailSkipReason,
+      cameraDistance: globeRegionalDetailCameraDistance,
+      baseScreenPixelsPerTexel: globeRegionalDetailBaseScreenPixelsPerTexel,
+      sourceTexelsPerScreenPixel: globeRegionalDetailSourceTexelsPerScreenPixel,
+      lastRenderMs: globeRegionalDetailLastRenderMs,
+      preemptedBaseUpgrade: globeRegionalDetailPreemptedBaseUpgrade,
+      rasterWidth: globeRegionalDetailRasterSize.width,
+      rasterHeight: globeRegionalDetailRasterSize.height,
+      rasterPixels: globeRegionalDetailRasterSize.width * globeRegionalDetailRasterSize.height,
+      crop: globeRegionalDetailBounds
+    },
     overlayCounts
   };
 };
@@ -2518,6 +3316,7 @@ const threeD = {
   getGlobeRenderDiagnostics,
   isGlobeReady,
   isGlobeSettled,
+  isGlobeRegionalDetailReady,
   projectGlobeMapPointToScreen,
   setSunColor,
   setScale,

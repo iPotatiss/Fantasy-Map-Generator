@@ -61,6 +61,52 @@ test.describe("3D view with eroded terrain", () => {
 test.describe("3D globe lifecycle", () => {
   test.setTimeout(180_000);
 
+  test("prioritizes visible detail when zooming before the world upgrade", async ({ page }) => {
+    const errors: string[] = [];
+    page.on("pageerror", error => errors.push(`pageerror: ${error.message}`));
+    await page.addInitScript(() => {
+      window.requestIdleCallback = callback =>
+        window.setTimeout(() => callback({ didTimeout: false, timeRemaining: () => 50 }), 750);
+      window.cancelIdleCallback = id => window.clearTimeout(id);
+    });
+    await page.goto("/");
+    await page.waitForFunction(() => (window as any).mapId !== undefined, { timeout: 120_000 });
+
+    const hasWebGL = await page.evaluate(() => {
+      const canvas = document.createElement("canvas");
+      return Boolean(canvas.getContext("webgl2") || canvas.getContext("webgl"));
+    });
+    test.skip(!hasWebGL, "WebGL is not available in this environment");
+
+    await page.evaluate(() => {
+      const app = window as any;
+      app.ThreeD.options.rotateGlobe = 0;
+      app.ThreeD.setGlobeProjection("world");
+      return app.enter3dView("viewGlobe");
+    });
+    await page.waitForSelector("#canvas3d", { state: "visible", timeout: 60_000 });
+    await expect.poll(() => page.evaluate(() => (window as any).ThreeD.isGlobeReady())).toBe(true);
+
+    const globeCanvas = page.locator("#canvas3d");
+    const globeBox = await globeCanvas.boundingBox();
+    if (!globeBox) throw new Error("The globe canvas has no visible bounds");
+    await page.mouse.move(globeBox.x + globeBox.width / 2, globeBox.y + globeBox.height / 2);
+    for (let index = 0; index < 40; index++) {
+      await page.mouse.wheel(0, -700);
+      await page.waitForTimeout(18);
+    }
+
+    await expect
+      .poll(() => page.evaluate(() => (window as any).ThreeD.isGlobeRegionalDetailReady()), { timeout: 60_000 })
+      .toBe(true);
+    const rendering = await page.evaluate(() => (window as any).ThreeD.getGlobeRenderDiagnostics());
+    expect(rendering.regionalDetail.preemptedBaseUpgrade).toBe(true);
+    expect(rendering.regionalDetail.active).toBe(true);
+    expect(rendering.textureWidth).toBeLessThan(rendering.targetTextureWidth);
+    expect(rendering.upgradePending).toBe(true);
+    expect(errors).toEqual([]);
+  });
+
   test("keeps exactly one sphere through redraw and texture races", async ({ page }) => {
     const errors: string[] = [];
     page.on("pageerror", (error) => errors.push(`pageerror: ${error.message}`));
@@ -102,6 +148,13 @@ test.describe("3D globe lifecycle", () => {
     expect(globeRendering.overlayCounts["burg-icon"]).toBeGreaterThan(0);
     expect(globeRendering.overlayCounts["state-label"]).toBeLessThanOrEqual(globeRendering.overlayLimits.states);
     expect(globeRendering.overlayCounts["burg-icon"]).toBeLessThanOrEqual(globeRendering.overlayLimits.burgIcons);
+    expect(globeRendering.overlaySizing.burgLabelGlyphCssPixels).toBeGreaterThanOrEqual(16);
+    expect(globeRendering.overlaySizing.burgIconBoxCssPixels).toBeGreaterThanOrEqual(28);
+    expect(globeRendering.overlaySizing.capitalIconBoxCssPixels).toBeGreaterThanOrEqual(34);
+    expect(globeRendering.overlaySizing.markerIconBoxCssPixels).toBeGreaterThanOrEqual(40);
+    expect(globeRendering.overlayTextureCount).toBeLessThanOrEqual(
+      Math.max(globeRendering.overlayCacheLimit, globeRendering.activeOverlayTextureCount)
+    );
 
     await expect
       .poll(() => page.evaluate(() => (window as any).ThreeD.isGlobeSettled()), { timeout: 60_000 })
@@ -133,6 +186,53 @@ test.describe("3D globe lifecycle", () => {
         })
       )
       .toEqual({ fillsViewport: true, usesCappedPixelRatio: true, ready: true });
+
+    // At close zoom the whole-world texture no longer has enough source
+    // texels for each screen pixel. A bounded regional crop should replace
+    // it after movement stops, without adding another canonical globe mesh.
+    const globeCanvas = page.locator("#canvas3d");
+    const globeBox = await globeCanvas.boundingBox();
+    if (!globeBox) throw new Error("The globe canvas has no visible bounds");
+    await page.mouse.move(globeBox.x + globeBox.width / 2, globeBox.y + globeBox.height / 2);
+    for (let index = 0; index < 40; index++) {
+      await page.mouse.wheel(0, -700);
+      await page.waitForTimeout(18);
+    }
+
+    await expect
+      .poll(() => page.evaluate(() => (window as any).ThreeD.isGlobeRegionalDetailReady()), { timeout: 60_000 })
+      .toBe(true);
+    const closeRendering = await page.evaluate(() => (window as any).ThreeD.getGlobeRenderDiagnostics());
+    const regionalPixelBudget =
+      closeRendering.qualityTier === "low" ? 2_000_000 : closeRendering.qualityTier === "balanced" ? 4_000_000 : 7_000_000;
+    expect(closeRendering.regionalDetail).toMatchObject({ active: true, visible: true });
+    expect(closeRendering.regionalDetail.baseScreenPixelsPerTexel).toBeGreaterThan(1.25);
+    expect(closeRendering.regionalDetail.sourceTexelsPerScreenPixel).toBeGreaterThanOrEqual(
+      closeRendering.qualityTier === "low" ? 1.1 : 1.2
+    );
+    expect(closeRendering.regionalDetail.rasterPixels).toBeLessThanOrEqual(regionalPixelBudget);
+    expect(closeRendering.regionalDetail.crop.width).toBeLessThan((await page.evaluate(() => (window as any).graphWidth)) * 0.72);
+    expect(closeRendering.overlayTextureCount).toBeLessThanOrEqual(
+      Math.max(closeRendering.overlayCacheLimit, closeRendering.activeOverlayTextureCount)
+    );
+    expect(await page.evaluate(() => (window as any).ThreeD.getGlobeMeshCount())).toBe(1);
+
+    await page.mouse.down();
+    await page.mouse.move(globeBox.x + globeBox.width / 2 + 30, globeBox.y + globeBox.height / 2 + 14, { steps: 3 });
+    await expect
+      .poll(() => page.evaluate(() => (window as any).ThreeD.getGlobeRenderDiagnostics().regionalDetail.visible))
+      .toBe(false);
+    await page.mouse.up();
+    await expect
+      .poll(() => page.evaluate(() => (window as any).ThreeD.isGlobeRegionalDetailReady()), { timeout: 60_000 })
+      .toBe(true);
+
+    // Return to a wide view so the following redraw race does not spend time
+    // preparing close-up detail that the test does not need.
+    for (let index = 0; index < 40; index++) {
+      await page.mouse.wheel(0, 700);
+      await page.waitForTimeout(12);
+    }
 
     const refreshingState = await page.evaluate(() => {
       const threeD = (window as any).ThreeD;
