@@ -92,7 +92,7 @@ function getClosedRing(points: Array<[number, number]>) {
 }
 
 type NaturalCoastGeometry = {
-  edges: Set<string>;
+  edges: Map<string, Array<[number, number]>>;
   vertices: Map<string, [number, number]>;
 };
 
@@ -100,26 +100,69 @@ const pointKey = ([x, y]: [number, number]) => `${x.toFixed(4)},${y.toFixed(4)}`
 const edgeKey = (a: [number, number], b: [number, number]) => [pointKey(a), pointKey(b)].sort().join("|");
 
 function buildNaturalCoastGeometry(pack: PackedGraph, width: number, height: number): NaturalCoastGeometry {
-  const edges = new Set<string>();
+  const edges = new Map<string, Array<[number, number]>>();
   const vertices = new Map<string, [number, number]>();
+  const features: Array<Array<[number, number]>> = [];
   for (const feature of pack.features.slice(1)) {
     if (!feature?.vertices?.length || (feature.type !== "island" && feature.type !== "lake")) continue;
     const points = feature.vertices.map(vertexId => pack.vertices.p[vertexId]).filter(Boolean) as Array<
       [number, number]
     >;
+    features.push(points);
     for (let index = 0; index < points.length; index++) {
       const previous = points[(index - 1 + points.length) % points.length];
       const current = points[index];
       const next = points[(index + 1) % points.length];
       const onMapEdge = current[0] === 0 || current[0] === width || current[1] === 0 || current[1] === height;
-      const nextOnMapEdge = next[0] === 0 || next[0] === width || next[1] === 0 || next[1] === height;
-      if (!onMapEdge || !nextOnMapEdge) edges.add(edgeKey(current, next));
       vertices.set(
         pointKey(current),
         onMapEdge
           ? current
-          : [current[0] * 0.6 + (previous[0] + next[0]) * 0.2, current[1] * 0.6 + (previous[1] + next[1]) * 0.2]
+          : [current[0] * 0.7 + (previous[0] + next[0]) * 0.15, current[1] * 0.7 + (previous[1] + next[1]) * 0.15]
       );
+    }
+  }
+
+  const interpolate = (
+    start: [number, number],
+    end: [number, number],
+    startTangent: [number, number],
+    endTangent: [number, number],
+    t: number
+  ): [number, number] => {
+    const t2 = t * t;
+    const t3 = t2 * t;
+    const h00 = 2 * t3 - 3 * t2 + 1;
+    const h10 = t3 - 2 * t2 + t;
+    const h01 = -2 * t3 + 3 * t2;
+    const h11 = t3 - t2;
+    return [
+      h00 * start[0] + h10 * startTangent[0] + h01 * end[0] + h11 * endTangent[0],
+      h00 * start[1] + h10 * startTangent[1] + h01 * end[1] + h11 * endTangent[1]
+    ];
+  };
+
+  for (const points of features) {
+    for (let index = 0; index < points.length; index++) {
+      const rawStart = points[index];
+      const rawEnd = points[(index + 1) % points.length];
+      const startOnEdge = rawStart[0] === 0 || rawStart[0] === width || rawStart[1] === 0 || rawStart[1] === height;
+      const endOnEdge = rawEnd[0] === 0 || rawEnd[0] === width || rawEnd[1] === 0 || rawEnd[1] === height;
+      if (startOnEdge && endOnEdge) continue;
+
+      const previous = vertices.get(pointKey(points[(index - 1 + points.length) % points.length]))!;
+      const start = vertices.get(pointKey(rawStart))!;
+      const end = vertices.get(pointKey(rawEnd))!;
+      const next = vertices.get(pointKey(points[(index + 2) % points.length]))!;
+      const startTangent: [number, number] = [(end[0] - previous[0]) * 0.28, (end[1] - previous[1]) * 0.28];
+      const endTangent: [number, number] = [(next[0] - start[0]) * 0.28, (next[1] - start[1]) * 0.28];
+      const curve = [
+        start,
+        interpolate(start, end, startTangent, endTangent, 1 / 3),
+        interpolate(start, end, startTangent, endTangent, 2 / 3),
+        end
+      ];
+      edges.set(edgeKey(rawStart, rawEnd), pointKey(rawStart) < pointKey(rawEnd) ? curve : curve.reverse());
     }
   }
   return { edges, vertices };
@@ -133,25 +176,10 @@ function naturalizeRing(points: Array<[number, number]>, coast: NaturalCoastGeom
     const start = coast.vertices.get(pointKey(rawStart)) || rawStart;
     const end = coast.vertices.get(pointKey(rawEnd)) || rawEnd;
     if (!result.length) result.push(start);
-    if (coast.edges.has(edgeKey(rawStart, rawEnd))) {
-      const dx = end[0] - start[0];
-      const dy = end[1] - start[1];
-      const length = Math.hypot(dx, dy);
-      if (length > 0.8) {
-        const hash = edgeKey(rawStart, rawEnd)
-          .split("")
-          .reduce((value, character) => (value * 31 + character.charCodeAt(0)) | 0, 7);
-        const direction = (hash & 1) === 0 ? 1 : -1;
-        const amplitude = Math.min(length * 0.1, Math.sqrt(length) * 0.45) * direction;
-        const perpendicular: [number, number] = [-dy / length, dx / length];
-        result.push(
-          [start[0] + dx / 3 + perpendicular[0] * amplitude, start[1] + dy / 3 + perpendicular[1] * amplitude],
-          [
-            start[0] + (dx * 2) / 3 - perpendicular[0] * amplitude * 0.55,
-            start[1] + (dy * 2) / 3 - perpendicular[1] * amplitude * 0.55
-          ]
-        );
-      }
+    const storedCurve = coast.edges.get(edgeKey(rawStart, rawEnd));
+    if (storedCurve) {
+      const curve = pointKey(rawStart) < pointKey(rawEnd) ? storedCurve : storedCurve.toReversed();
+      result.push(...curve.slice(1, -1));
     }
     result.push(end);
   }
@@ -223,6 +251,40 @@ function getSharedEdge(pack: PackedGraph, fromCell: number, toCell: number, widt
   const shared = pack.cells.v[fromCell].filter(vertexId => toVertices.has(vertexId));
   if (shared.length < 2) return null;
   return shared.slice(0, 2).map(vertexId => mapPointToVectorLngLat(pack.vertices.p[vertexId], width, height));
+}
+
+export function getRiverDisplayPoints(
+  pack: PackedGraph,
+  river: PackedGraph["rivers"][number]
+): Array<[number, number]> {
+  const cells = river.cells || [];
+  if (!cells.length) return (river.points || []).map(point => [point[0], point[1]]);
+  const landCells: number[] = [];
+  let firstWaterCell: number | null = null;
+  for (const cellId of cells) {
+    if (pack.cells.h[cellId] < 20) {
+      firstWaterCell = cellId;
+      break;
+    }
+    landCells.push(cellId);
+  }
+
+  const customPointsMatchCells = river.points?.length === cells.length;
+  const points = landCells.map<[number, number]>((cellId, index) => {
+    const point = customPointsMatchCells ? river.points?.[index] : pack.cells.p[cellId];
+    return [point![0], point![1]];
+  });
+
+  const mouthCell = landCells.at(-1);
+  if (mouthCell !== undefined && firstWaterCell !== null) {
+    const waterVertices = new Set(pack.cells.v[firstWaterCell]);
+    const shorelineVertices = pack.cells.v[mouthCell].filter(vertexId => waterVertices.has(vertexId));
+    if (shorelineVertices.length >= 2) {
+      const [a, b] = shorelineVertices.slice(0, 2).map(vertexId => pack.vertices.p[vertexId]);
+      points.push([(a[0] + b[0]) / 2, (a[1] + b[1]) / 2]);
+    }
+  }
+  return points;
 }
 
 export function buildVectorGlobeData(
@@ -357,7 +419,7 @@ export function buildVectorGlobeData(
   const rivers = pack.rivers
     .map(river => ({
       river,
-      points: river.points?.length ? river.points : river.cells.map(cellId => pack.cells.p[cellId]).filter(Boolean)
+      points: getRiverDisplayPoints(pack, river)
     }))
     .filter(({ points }) => points.length > 1)
     .map<Feature<LineString, VectorProperties>>(({ river, points }) => ({

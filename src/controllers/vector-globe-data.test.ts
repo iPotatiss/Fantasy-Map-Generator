@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { PackedGraph } from "../types/PackedGraph";
-import { buildVectorGlobeData, mapPointToVectorLngLat } from "./vector-globe-data";
+import { buildVectorGlobeData, getRiverDisplayPoints, mapPointToVectorLngLat } from "./vector-globe-data";
 
 describe("vector globe data", () => {
   it("maps the rectangular FMG extent into a pole-safe longitude and latitude range", () => {
@@ -114,5 +114,45 @@ describe("vector globe data", () => {
       properties: { burgId: 1, name: "Center" },
       geometry: { coordinates: [0, 0] }
     });
+  });
+
+  it("ends rivers at the shoreline instead of drawing through ocean cells", () => {
+    const graph = {
+      cells: {
+        h: new Uint8Array([30, 10, 30]),
+        p: [
+          [10, 10],
+          [20, 10],
+          [30, 10]
+        ],
+        v: [
+          [0, 1, 2],
+          [1, 2, 3],
+          [2, 3, 0]
+        ]
+      },
+      vertices: {
+        p: [
+          [5, 5],
+          [15, 5],
+          [15, 15],
+          [25, 15]
+        ]
+      }
+    } as unknown as PackedGraph;
+    const river = {
+      i: 1,
+      cells: [0, 1, 2],
+      points: [
+        [10, 10],
+        [20, 10],
+        [30, 10]
+      ]
+    } as PackedGraph["rivers"][number];
+
+    expect(getRiverDisplayPoints(graph, river)).toEqual([
+      [10, 10],
+      [15, 10]
+    ]);
   });
 });
