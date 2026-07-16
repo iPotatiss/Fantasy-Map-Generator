@@ -155,4 +155,42 @@ describe("vector globe data", () => {
       [15, 10]
     ]);
   });
+
+  it("falls back to cell centres when a generated river point is missing", () => {
+    const graph = {
+      cells: {
+        h: new Uint8Array([30, 30, 10]),
+        p: [
+          [10, 10],
+          [20, 10],
+          [30, 10]
+        ],
+        v: [
+          [0, 1, 4],
+          [1, 2, 4],
+          [2, 3, 4]
+        ]
+      },
+      vertices: {
+        p: [
+          [5, 5],
+          [15, 5],
+          [25, 5],
+          [35, 5],
+          [25, 15]
+        ]
+      }
+    } as unknown as PackedGraph;
+    const river = {
+      i: 2,
+      cells: [0, 1, 2],
+      points: [[10, 10], undefined, [30, 10]]
+    } as unknown as PackedGraph["rivers"][number];
+
+    expect(getRiverDisplayPoints(graph, river)).toEqual([
+      [10, 10],
+      [20, 10],
+      [25, 10]
+    ]);
+  });
 });

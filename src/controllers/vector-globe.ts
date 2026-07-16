@@ -26,6 +26,8 @@ let vectorSettlementTimer = 0;
 let vectorPreloadedSettlement: HTMLIFrameElement | null = null;
 let vectorPreloadedSettlementId = 0;
 let vectorSettlementExiting = false;
+let vectorZoomIntent: { burgId: number; point: { x: number; y: number } | null; time: number } | null = null;
+let vectorFeatureClickHandled = false;
 let vectorMotionDetailPaused = false;
 let vectorStage = "World";
 let vectorDataBuildMs = 0;
@@ -322,7 +324,7 @@ function addVectorLayers() {
     type: "symbol",
     source: SOURCE_IDS.burgs,
     minzoom: 3.1,
-    maxzoom: 7.1,
+    maxzoom: 6.6,
     layout: {
       "text-field": ["get", "name"],
       "text-font": ["Open Sans Regular"],
@@ -345,11 +347,11 @@ function addVectorLayers() {
     id: "fmg-burg-labels-close",
     type: "symbol",
     source: SOURCE_IDS.burgs,
-    minzoom: 7.1,
+    minzoom: 6.6,
     layout: {
       "text-field": ["get", "name"],
       "text-font": ["Open Sans Regular"],
-      "text-size": ["interpolate", ["linear"], ["zoom"], 7.1, 15, 9, 17, 11, 20],
+      "text-size": ["interpolate", ["linear"], ["zoom"], 6.6, 14, 9, 17, 11, 20],
       "text-variable-anchor": ["top", "bottom", "left", "right"],
       "text-radial-offset": 0.72,
       "text-justify": "auto",
@@ -502,6 +504,7 @@ function openFeatureEditor(type: "burg" | "marker", id: number) {
 }
 
 export function closeVectorSettlement() {
+  vectorZoomIntent = null;
   if (!vectorSettlement) return;
   vectorSettlement?.remove();
   vectorSettlement = null;
@@ -582,7 +585,10 @@ export function openVectorSettlement(burgId: number) {
   external.href = previewData.link || preview;
   external.target = "_blank";
   external.rel = "noopener noreferrer";
-  header.append(back, title, inspect, external);
+  const actions = document.createElement("div");
+  actions.className = "fmg-settlement-view__actions";
+  actions.append(inspect, external);
+  header.append(back, title, actions);
 
   const content = document.createElement("div");
   content.className = "fmg-settlement-view__content";
@@ -608,6 +614,8 @@ export function openVectorSettlement(burgId: number) {
   let townScale = 1;
   let panX = 0;
   let panY = 0;
+  let exitPull = 0;
+  let exitPullResetTimer = 0;
   let townDrag: { x: number; y: number } | null = null;
   const applyTownTransform = () => {
     frame.style.transform = `translate(${panX}px, ${panY}px) scale(${townScale})`;
@@ -619,9 +627,21 @@ export function openVectorSettlement(burgId: number) {
       event.preventDefault();
       event.stopPropagation();
       if (event.deltaY > 0 && townScale <= 1.02) {
-        returnToGlobe();
+        exitPull += Math.min(80, Math.abs(event.deltaY));
+        zoomSurface.dataset.returning = "true";
+        zoomHint.textContent = "Keep scrolling out to return to globe";
+        if (exitPullResetTimer) window.clearTimeout(exitPullResetTimer);
+        exitPullResetTimer = window.setTimeout(() => {
+          exitPull = 0;
+          zoomSurface.dataset.returning = "false";
+          zoomHint.textContent = "Scroll to explore town • scroll out to return to globe";
+        }, 850);
+        if (exitPull >= 240) returnToGlobe();
         return;
       }
+      exitPull = 0;
+      zoomSurface.dataset.returning = "false";
+      zoomHint.textContent = "Scroll to explore town • scroll out to return to globe";
       const nextScale = Math.min(4, Math.max(1, townScale * Math.exp(-event.deltaY * 0.0015)));
       if (nextScale === townScale) return;
       townScale = nextScale;
@@ -681,8 +701,37 @@ export function openVectorSettlement(burgId: number) {
   return true;
 }
 
-function getBurgNearestCenter(maxDistance = 48) {
-  if (!vectorMap || !vectorData) return 0;
+function getClosestRenderedBurg(point: { x: number; y: number }, layers: readonly string[]) {
+  if (!vectorMap) return 0;
+  let features: ReturnType<MapLibreMap["queryRenderedFeatures"]>;
+  try {
+    features = vectorMap.queryRenderedFeatures([point.x, point.y], { layers: [...layers] });
+  } catch {
+    // Symbol buckets can be briefly unavailable while MapLibre swaps close-zoom
+    // tiles. Treat that frame as untargetable instead of guessing another town.
+    return 0;
+  }
+  let closestId = 0;
+  let closestDistance = Number.POSITIVE_INFINITY;
+  for (const feature of features) {
+    if (feature.geometry.type !== "Point") continue;
+    const burgId = Number(feature.properties?.burgId || feature.id || 0);
+    if (!burgId) continue;
+    const projected = vectorMap.project(feature.geometry.coordinates as [number, number]);
+    const distance = (projected.x - point.x) ** 2 + (projected.y - point.y) ** 2;
+    if (distance >= closestDistance) continue;
+    closestId = burgId;
+    closestDistance = distance;
+  }
+  return closestId;
+}
+
+function getRenderedBurgIdAtPoint(point: { x: number; y: number }) {
+  return getClosestRenderedBurg(point, INTERACTIVE_BURG_LAYERS);
+}
+
+function getBurgAtMapCenter() {
+  if (!vectorMap) return 0;
   const center = vectorMap.project(vectorMap.getCenter());
   const markerAtCenter = vectorMap.queryRenderedFeatures(
     [
@@ -692,18 +741,23 @@ function getBurgNearestCenter(maxDistance = 48) {
     { layers: ["fmg-markers"] }
   );
   if (markerAtCenter.length) return 0;
-  let closestId = 0;
-  let closestDistance = maxDistance * maxDistance;
-  for (const feature of vectorData.burgs.features) {
-    const projected = vectorMap.project(feature.geometry.coordinates as [number, number]);
-    const distance = (projected.x - center.x) ** 2 + (projected.y - center.y) ** 2;
-    if (distance >= closestDistance) continue;
-    const burgId = Number(feature.properties.burgId || feature.id || 0);
-    if (!burgId || !Burgs.getPreview(pack.burgs[burgId])?.preview) continue;
-    closestId = burgId;
-    closestDistance = distance;
+  return getRenderedBurgIdAtPoint(center);
+}
+
+function resolveSettlementTarget() {
+  if (!vectorMap) return 0;
+  if (vectorZoomIntent && performance.now() - vectorZoomIntent.time < 2500) {
+    if (!vectorZoomIntent.burgId) return 0;
+    const burg = pack.burgs[vectorZoomIntent.burgId];
+    if (!burg || burg.removed || !Burgs.getPreview(burg)?.preview) return 0;
+    if (vectorZoomIntent.point) {
+      const projected = vectorMap.project(mapPointToVectorLngLat([burg.x, burg.y], graphWidth, graphHeight));
+      const distance = (projected.x - vectorZoomIntent.point.x) ** 2 + (projected.y - vectorZoomIntent.point.y) ** 2;
+      if (distance > 34 ** 2) return 0;
+    }
+    return vectorZoomIntent.burgId;
   }
-  return closestId;
+  return getBurgAtMapCenter();
 }
 
 function updateSettlementMap() {
@@ -712,7 +766,7 @@ function updateSettlementMap() {
     closeVectorSettlement();
     return;
   }
-  const burgId = getBurgNearestCenter();
+  const burgId = resolveSettlementTarget();
   if (!burgId || burgId === vectorSettlementId) return;
   openVectorSettlement(burgId);
 }
@@ -723,7 +777,7 @@ function scheduleSettlementMap() {
     () => {
       vectorSettlementTimer = 0;
       if ((vectorMap?.getZoom() || 0) >= SETTLEMENT_PRELOAD_ZOOM && !vectorSettlement) {
-        preloadSettlement(getBurgNearestCenter(96));
+        preloadSettlement(resolveSettlementTarget());
       }
       updateSettlementMap();
     },
@@ -732,12 +786,12 @@ function scheduleSettlementMap() {
 }
 
 function getBurgIdNearPoint(point: { x: number; y: number }) {
-  if (!vectorMap || !vectorData) return 0;
+  const renderedId = getRenderedBurgIdAtPoint(point);
+  if (renderedId || !vectorMap || !vectorData) return renderedId;
   const includeTowns = vectorMap.getZoom() >= 3.2;
-  const radius = vectorMap.getZoom() >= SETTLEMENT_ENTRY_ZOOM ? 22 : 17;
+  const radius = vectorMap.getZoom() >= SETTLEMENT_ENTRY_ZOOM ? 18 : 14;
   let closestId = 0;
-  let closestDistance = radius * radius;
-
+  let closestDistance = radius ** 2;
   for (const feature of vectorData.burgs.features) {
     if (!includeTowns && !feature.properties.capital) continue;
     const projected = vectorMap.project(feature.geometry.coordinates as [number, number]);
@@ -746,15 +800,14 @@ function getBurgIdNearPoint(point: { x: number; y: number }) {
     closestId = Number(feature.properties.burgId || feature.id || 0);
     closestDistance = distance;
   }
-
   return closestId;
 }
 
-function handleBurgClick(point: { x: number; y: number }, alwaysOpenSettlement = false) {
-  const burgId = getBurgIdNearPoint(point);
+function handleBurgId(burgId: number, alwaysOpenSettlement = false) {
   if (!burgId) return false;
   if (alwaysOpenSettlement || (vectorMap?.getZoom() || 0) >= SETTLEMENT_ENTRY_ZOOM) {
     const burg = pack.burgs[burgId];
+    vectorZoomIntent = { burgId, point: null, time: performance.now() };
     vectorMap?.easeTo({
       center: mapPointToVectorLngLat([burg.x, burg.y], graphWidth, graphHeight),
       zoom: SETTLEMENT_MAP_ZOOM,
@@ -766,6 +819,10 @@ function handleBurgClick(point: { x: number; y: number }, alwaysOpenSettlement =
   return true;
 }
 
+function handleBurgClick(point: { x: number; y: number }, alwaysOpenSettlement = false) {
+  return handleBurgId(getBurgIdNearPoint(point), alwaysOpenSettlement);
+}
+
 function attachInteractions() {
   if (!vectorMap) return;
   for (const layer of INTERACTIVE_BURG_LAYERS) {
@@ -774,6 +831,15 @@ function attachInteractions() {
     });
     vectorMap.on("mouseleave", layer, () => {
       if (vectorMap) vectorMap.getCanvas().style.cursor = "grab";
+    });
+    vectorMap.on("click", layer, event => {
+      const burgId = Number(event.features?.[0]?.properties?.burgId || event.features?.[0]?.id || 0);
+      if (!burgId) return;
+      vectorFeatureClickHandled = true;
+      handleBurgId(burgId);
+      window.setTimeout(() => {
+        vectorFeatureClickHandled = false;
+      }, 0);
     });
   }
   // Resolve the nearest visible settlement geometrically instead of depending
@@ -784,7 +850,20 @@ function attachInteractions() {
     const rect = canvas.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   };
+  canvas.addEventListener(
+    "wheel",
+    event => {
+      if (event.deltaY >= 0) {
+        vectorZoomIntent = null;
+        return;
+      }
+      const point = getCanvasPoint(event);
+      vectorZoomIntent = { burgId: getRenderedBurgIdAtPoint(point), point, time: performance.now() };
+    },
+    { passive: true, capture: true }
+  );
   canvas.addEventListener("click", event => {
+    if (vectorFeatureClickHandled) return;
     const point = getCanvasPoint(event);
     const markerAtPoint = vectorMap?.queryRenderedFeatures([point.x, point.y], { layers: ["fmg-markers"] });
     if (markerAtPoint?.length) return;
@@ -804,7 +883,13 @@ function attachInteractions() {
   });
   vectorMap.on("click", "fmg-markers", event => {
     const id = Number(event.features?.[0]?.properties?.markerId || event.features?.[0]?.id || 0);
-    if (id) openFeatureEditor("marker", id);
+    if (id) {
+      vectorFeatureClickHandled = true;
+      openFeatureEditor("marker", id);
+      window.setTimeout(() => {
+        vectorFeatureClickHandled = false;
+      }, 0);
+    }
   });
   vectorMap.on("zoom", () => {
     updateHud();
@@ -813,7 +898,10 @@ function attachInteractions() {
   vectorMap.on("moveend", scheduleSettlementMap);
   vectorMap.on("moveend", () => setMotionDetailPaused(false));
   vectorMap.on("zoomend", () => {
-    if ((vectorMap?.getZoom() || 0) < SETTLEMENT_MAP_ZOOM) vectorSettlementExiting = false;
+    if ((vectorMap?.getZoom() || 0) < SETTLEMENT_MAP_ZOOM) {
+      vectorSettlementExiting = false;
+      if ((vectorMap?.getZoom() || 0) < SETTLEMENT_ENTRY_ZOOM) vectorZoomIntent = null;
+    }
     scheduleSettlementMap();
   });
 }
@@ -954,6 +1042,8 @@ export function stopVectorGlobe() {
   vectorPerformanceProfile = "quality";
   vectorPixelRatio = 1;
   vectorSettlementExiting = false;
+  vectorZoomIntent = null;
+  vectorFeatureClickHandled = false;
   vectorMotionDetailPaused = false;
   vectorReady = false;
   vectorStage = "World";
@@ -982,6 +1072,7 @@ export function projectVectorMapPointToScreen(x: number, y: number) {
 export function focusVectorGlobeOnBurg(burgId: number, zoom = SETTLEMENT_ENTRY_ZOOM + 0.4) {
   const burg = pack.burgs[burgId];
   if (!vectorMap || !burg || burg.removed) return false;
+  vectorZoomIntent = { burgId, point: null, time: performance.now() };
   vectorMap.jumpTo({ center: mapPointToVectorLngLat([burg.x, burg.y], graphWidth, graphHeight), zoom });
   return true;
 }

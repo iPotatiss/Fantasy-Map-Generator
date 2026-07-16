@@ -281,9 +281,15 @@ export function getRiverDisplayPoints(
   }
 
   const customPointsMatchCells = river.points?.length === cells.length;
-  const points = landCells.map<[number, number]>((cellId, index) => {
-    const point = customPointsMatchCells ? river.points?.[index] : pack.cells.p[cellId];
-    return [point![0], point![1]];
+  const points: Array<[number, number]> = [];
+  landCells.forEach((cellId, index) => {
+    const customPoint = customPointsMatchCells ? river.points?.[index] : null;
+    const point =
+      customPoint && Number.isFinite(customPoint[0]) && Number.isFinite(customPoint[1])
+        ? customPoint
+        : pack.cells.p[cellId];
+    if (!point || !Number.isFinite(point[0]) || !Number.isFinite(point[1])) return;
+    points.push([point[0], point[1]]);
   });
 
   const mouthCell = landCells.at(-1);

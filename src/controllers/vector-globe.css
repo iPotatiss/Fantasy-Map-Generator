@@ -111,7 +111,10 @@
 }
 
 .fmg-settlement-view__header {
-  display: flex;
+  position: relative;
+  z-index: 4;
+  display: grid;
+  grid-template-columns: minmax(160px, 1fr) minmax(0, 2fr) minmax(160px, 1fr);
   align-items: center;
   gap: 10px;
   min-height: 54px;
@@ -122,16 +125,26 @@
 }
 
 .fmg-settlement-view__title {
-  flex: 1;
+  grid-column: 2;
   overflow: hidden;
   font-family: Georgia, serif;
   font-size: 18px;
+  text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.fmg-settlement-view__actions {
+  grid-column: 3;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
 .fmg-settlement-view__content {
   position: relative;
+  overflow: hidden;
   min-height: 0;
   background: #e8dfca;
 }
@@ -190,6 +203,10 @@
 
 .fmg-settlement-view__zoom-surface[data-zoomed="true"] span {
   opacity: 0;
+}
+
+.fmg-settlement-view__zoom-surface[data-returning="true"] span {
+  opacity: 0.95;
 }
 
 .fmg-settlement-view__clouds {
@@ -275,6 +292,10 @@
 
   .fmg-vector-globe__stage {
     min-width: 70px;
+  }
+
+  .fmg-settlement-view__header {
+    grid-template-columns: minmax(100px, 1fr) minmax(0, 1.5fr) minmax(100px, 1fr);
   }
 
   .fmg-settlement-view__header a {

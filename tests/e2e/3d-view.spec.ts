@@ -136,7 +136,7 @@ test.describe("vector globe and settlement maps", () => {
     const target = await page.evaluate(() => {
       const app = window as any;
       const burg = app.pack.burgs.find((candidate: any) => {
-        if (!candidate?.i || candidate.removed) return false;
+        if (!candidate?.i || candidate.removed || !Number.isFinite(candidate.x) || !Number.isFinite(candidate.y)) return false;
         return Boolean(app.Burgs.getPreview(candidate).preview);
       });
       return burg ? { id: burg.i, name: burg.name } : null;
@@ -155,17 +155,37 @@ test.describe("vector globe and settlement maps", () => {
     await expect(page.locator("#burgName")).toHaveValue(target!.name);
     await page.evaluate(() => (window as any).$("#burgEditor").dialog("close"));
 
-    expect(await page.evaluate(id => (window as any).VectorGlobe.focusBurg(id, 10.2), target!.id)).toBe(true);
+    expect(await page.evaluate(id => (window as any).VectorGlobe.focusBurg(id, 8.4), target!.id)).toBe(true);
+    await page.waitForTimeout(200);
+    const deepZoomPoint = await page.evaluate(id => {
+      const app = window as any;
+      const burg = app.pack.burgs[id];
+      return app.ThreeD.projectGlobeMapPointToScreen(burg.x, burg.y);
+    }, target!.id);
+    await page.mouse.move(deepZoomPoint.x, deepZoomPoint.y);
+    for (let step = 0; step < 3; step++) {
+      await page.mouse.wheel(0, -500);
+      await page.waitForTimeout(120);
+    }
     await expect(page.locator(".fmg-settlement-view")).toBeVisible();
     await expect(page.locator(".fmg-settlement-view__title")).toHaveText(target!.name);
     await expect(page.locator(".fmg-settlement-view iframe")).toHaveAttribute("src", /preview=1/);
     await expect(page.locator(".fmg-settlement-view iframe")).toHaveAttribute("src", /village-generator/);
     await expect(page.locator(".fmg-settlement-view")).toHaveAttribute("data-interactive", "true");
+    const titleCenter = await page.locator(".fmg-settlement-view__title").evaluate(title => {
+      const box = title.getBoundingClientRect();
+      return box.left + box.width / 2;
+    });
+    expect(Math.abs(titleCenter - 640)).toBeLessThan(2);
 
     const townSurface = page.locator(".fmg-settlement-view__zoom-surface");
     await townSurface.dispatchEvent("wheel", { deltaY: -500 });
     await expect(page.locator(".fmg-settlement-view iframe")).toHaveAttribute("style", /scale\(/);
     await townSurface.dispatchEvent("wheel", { deltaY: 5000 });
+    await townSurface.dispatchEvent("wheel", { deltaY: 200 });
+    await expect(page.locator(".fmg-settlement-view")).toBeVisible();
+    await townSurface.dispatchEvent("wheel", { deltaY: 200 });
+    await expect(page.locator(".fmg-settlement-view")).toBeVisible();
     await townSurface.dispatchEvent("wheel", { deltaY: 200 });
     await expect(page.locator(".fmg-settlement-view")).toHaveCount(0);
     await expect.poll(() => page.evaluate(() => (window as any).ThreeD.getGlobeRenderDiagnostics().zoom)).toBeLessThan(9);
