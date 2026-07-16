@@ -480,10 +480,12 @@ function editHeightmap(options) {
 
     Burgs.generate();
     States.generate();
+    Burgs.balanceStateSettlements();
     Routes.generate();
     Religions.generate();
 
     Burgs.specify();
+    GenerationDirector.updateSettlementSummary();
     States.collectStatistics();
     States.defineStateForms();
 

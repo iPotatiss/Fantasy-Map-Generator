@@ -96,7 +96,16 @@ declare global {
     timeout?: number
   ) => void;
   var locked: (settingId: string) => boolean;
+  var lock: (settingId: string) => void;
   var unlock: (settingId: string) => void;
+  var GenerationDirector: {
+    applyPreset: (id: string) => void;
+    applyWaterCoverage: (heights: Uint8Array, targetPercent: number) => Uint8Array;
+    updateSettlementSummary: () => void;
+    updateWaterDescription: (value: number | string) => void;
+    getSettlementDensityMultiplier: (value: string) => number;
+    getCapitalImportanceMultiplier: (value: string) => number;
+  };
   var $: (selector: any) => any;
   var scale: number;
   var changeFont: () => void;

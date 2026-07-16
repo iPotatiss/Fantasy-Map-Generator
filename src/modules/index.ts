@@ -1,5 +1,6 @@
 import "./voronoi";
 import "./heightmap-generator";
+import "./generation-director";
 import "./features";
 import "./names-generator";
 import "./ocean-layers";

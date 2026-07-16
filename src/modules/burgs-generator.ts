@@ -2,6 +2,11 @@ import { quadtree } from "d3-quadtree";
 import { each, ensureEl, gauss, minmax, normalize, P, rn } from "../utils";
 import { type CultureType, DEFAULT_CULTURE_TYPE } from "./cultures-generator";
 import { NON_NAVIGABLE_LAKE_GROUPS } from "./features";
+import {
+  allocateByWeight,
+  getCapitalImportanceMultiplier,
+  getSettlementDensityMultiplier
+} from "./generation-director";
 import type { ProductionRecord } from "./production-generator";
 import type { River } from "./river-generator";
 import type { Point } from "./voronoi";
@@ -162,10 +167,100 @@ class BurgModule {
     function getTownsNumber() {
       const manorsInput = ensureEl("manorsInput") as HTMLInputElement;
       const isAuto = manorsInput.value === "1000"; // '1000' is considered as auto
-      if (isAuto) return rn(populatedCells.length / 5 / (grid.points.length / 10000) ** 0.8);
+      if (isAuto) {
+        const density = getSettlementDensityMultiplier((ensureEl("settlementDensityInput") as HTMLSelectElement).value);
+        const naturalCount = populatedCells.length / 5 / (grid.points.length / 10000) ** 0.8;
+        return Math.min(populatedCells.length, rn(naturalCount * density));
+      }
 
       return Math.min(manorsInput.valueAsNumber, populatedCells.length);
     }
+  }
+
+  balanceStateSettlements() {
+    const { cells, states, burgs } = pack;
+    const activeStates = states.filter(state => state.i && !state.removed);
+    const movable = burgs.filter(burg => burg.i && !burg.removed && !burg.capital && !burg.lock && burg.state);
+    if (!activeStates.length || !movable.length) return;
+
+    const weightByState = new Map<number, number>();
+    const candidatesByState = new Map<number, number[]>();
+    for (const cell of cells.i) {
+      const state = cells.state[cell];
+      if (!state || cells.h[cell] < 20 || !cells.culture[cell]) continue;
+      const suitability = Math.max(0, cells.s[cell]);
+      weightByState.set(state, (weightByState.get(state) || 0) + suitability + 0.25);
+      if (!cells.burg[cell] && suitability > 0) {
+        if (!candidatesByState.has(state)) candidatesByState.set(state, []);
+        candidatesByState.get(state)!.push(cell);
+      }
+    }
+
+    const densityValue = (ensureEl("settlementDensityInput") as HTMLSelectElement).value;
+    const minimum = densityValue === "bustling" ? 3 : densityValue === "sparse" ? 1 : 2;
+    const target = allocateByWeight(
+      movable.length,
+      activeStates.map(state => ({ id: state.i, weight: weightByState.get(state.i) || 0 })),
+      minimum
+    );
+    const current = new Map<number, Burg[]>();
+    for (const burg of movable) {
+      if (!current.has(burg.state!)) current.set(burg.state!, []);
+      current.get(burg.state!)!.push(burg);
+    }
+
+    const donors: Burg[] = [];
+    for (const state of activeStates) {
+      const stateBurgs = current.get(state.i) || [];
+      stateBurgs.sort((a, b) => cells.s[a.cell] - cells.s[b.cell] || a.i - b.i);
+      const excess = Math.max(0, stateBurgs.length - (target.get(state.i) || 0));
+      donors.push(...stateBurgs.slice(0, excess));
+    }
+
+    const pointsByBurg = new Map<Burg, Point>();
+    for (const burg of burgs) {
+      if (!burg.i || burg.removed) continue;
+      pointsByBurg.set(burg, [burg.x, burg.y]);
+    }
+    const occupied = quadtree<Point>()
+      .x(point => point[0])
+      .y(point => point[1])
+      .addAll([...pointsByBurg.values()]);
+    const spacing = Math.max(1.5, (graphWidth + graphHeight) / 600 / getSettlementDensityMultiplier(densityValue));
+    let donorIndex = 0;
+    for (const state of activeStates) {
+      const deficit = Math.max(0, (target.get(state.i) || 0) - (current.get(state.i)?.length || 0));
+      if (!deficit) continue;
+      const candidates = (candidatesByState.get(state.i) || []).sort(
+        (a, b) => cells.s[b] - cells.s[a] || cells.pop[b] - cells.pop[a] || a - b
+      );
+
+      let moved = 0;
+      for (const cell of candidates) {
+        if (moved >= deficit || donorIndex >= donors.length) break;
+        const [x, y] = cells.p[cell];
+        if (occupied.find(x, y, spacing)) continue;
+
+        const burg = donors[donorIndex++];
+        occupied.remove(pointsByBurg.get(burg)!);
+        cells.burg[burg.cell] = 0;
+        burg.cell = cell;
+        burg.x = x;
+        burg.y = y;
+        burg.state = state.i;
+        burg.culture = cells.culture[cell];
+        burg.name = Names.getCulture(burg.culture);
+        burg.feature = cells.f[cell];
+        delete burg.port;
+        cells.burg[cell] = burg.i;
+        const point: Point = [x, y];
+        pointsByBurg.set(burg, point);
+        occupied.add(point);
+        moved++;
+      }
+    }
+
+    this.assignPorts();
   }
 
   getType(cellId: number, port?: number): CultureType {
@@ -445,8 +540,8 @@ class BurgModule {
         name: "village",
         active: true,
         order: 2,
-        min: 0.1,
-        max: 2,
+        min: 0.35,
+        max: 2.5,
         preview: "watabou-village"
       },
       {
@@ -454,7 +549,7 @@ class BurgModule {
         active: true,
         order: 1,
         features: { plaza: false },
-        max: 0.1,
+        max: 0.35,
         preview: "watabou-village"
       },
       {
@@ -523,6 +618,12 @@ class BurgModule {
     pack.burgs.forEach(burg => {
       if (!burg.i || burg.removed || burg.lock) return;
       this.definePopulation(burg);
+    });
+
+    this.normalizeCapitalPopulations();
+
+    pack.burgs.forEach(burg => {
+      if (!burg.i || burg.removed || burg.lock) return;
       this.defineEmblem(burg);
       this.defineFeatures(burg);
     });
@@ -538,6 +639,24 @@ class BurgModule {
     });
 
     TIME && console.timeEnd("specifyBurgs");
+  }
+
+  private normalizeCapitalPopulations() {
+    const multiplier = getCapitalImportanceMultiplier((ensureEl("capitalImportanceInput") as HTMLSelectElement).value);
+    if (!multiplier) return;
+
+    for (const state of pack.states) {
+      if (!state.i || state.removed) continue;
+      const capital = pack.burgs[state.capital];
+      if (!capital || capital.lock) continue;
+      const largestOther = pack.burgs.reduce((largest, burg) => {
+        if (!burg.i || burg.removed || burg.state !== state.i || burg.capital) return largest;
+        return Math.max(largest, burg.population || 0);
+      }, 0);
+      if (largestOther && (capital.population || 0) < largestOther * multiplier) {
+        capital.population = rn(largestOther * multiplier, 3);
+      }
+    }
   }
 
   private createWatabouCityLinks(burg: Burg) {

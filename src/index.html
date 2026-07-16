@@ -1628,6 +1628,78 @@
                 <i id="optionsEraRegenerate" data-tip="Regenerate era" class="icon-arrows-cw"></i>
               </td>
             </tr>
+            <tr>
+              <td colspan="4" style="padding-top: 0.6em; font-weight: bold">Generation Director</td>
+            </tr>
+            <tr data-tip="Choose a creative starting direction. You can refine every setting afterward">
+              <td>
+                <i data-locked="0" id="lock_worldPreset" class="icon-lock-open"></i>
+              </td>
+              <td>World preset</td>
+              <td colspan="2">
+                <select id="worldPresetInput" data-stored="worldPreset">
+                  <option value="custom">Custom</option>
+                  <option value="earthLike">Earth-like</option>
+                  <option value="continental">Continental world</option>
+                  <option value="archipelago">Archipelago world</option>
+                  <option value="islandWorld">Island world</option>
+                  <option value="pangaea">Pangaea empires</option>
+                </select>
+              </td>
+            </tr>
+            <tr data-tip="Target share of the planet covered by oceans and lakes. Generation will report the achieved value">
+              <td>
+                <i data-locked="0" id="lock_waterCoverage" class="icon-lock-open"></i>
+              </td>
+              <td>Water coverage</td>
+              <td>
+                <input id="waterCoverageInput" data-stored="waterCoverage" type="range" min="5" max="95" step="1" value="71" />
+              </td>
+              <td><output id="waterCoverageOutput" data-stored="waterCoverage" value="71">71</output>%</td>
+            </tr>
+            <tr>
+              <td></td>
+              <td colspan="3">
+                <small id="waterCoverageDescription">Ocean-rich; Earth-like balance</small><br />
+                <small id="waterCoverageAchieved">Generate to measure the result</small>
+              </td>
+            </tr>
+            <tr data-tip="Control how many cities, towns, villages and hamlets the inhabited world supports">
+              <td>
+                <i data-locked="0" id="lock_settlementDensity" class="icon-lock-open"></i>
+              </td>
+              <td>Settlement density</td>
+              <td colspan="2">
+                <select id="settlementDensityInput" data-stored="settlementDensity">
+                  <option value="sparse">Sparse frontier</option>
+                  <option value="balanced" selected>Balanced realms</option>
+                  <option value="dense">Dense civilization</option>
+                  <option value="bustling">Bustling empires</option>
+                </select>
+              </td>
+            </tr>
+            <tr data-tip="Control whether capitals emerge naturally or are kept larger than other cities in their kingdom">
+              <td>
+                <i data-locked="0" id="lock_capitalImportance" class="icon-lock-open"></i>
+              </td>
+              <td>Capital importance</td>
+              <td colspan="2">
+                <select id="capitalImportanceInput" data-stored="capitalImportance">
+                  <option value="natural">Natural</option>
+                  <option value="prominent" selected>Prominent</option>
+                  <option value="dominant">Dominant</option>
+                </select>
+              </td>
+            </tr>
+            <tr>
+              <td></td>
+              <td colspan="3" id="settlementGenerationSummary" style="font-size: 0.9em; opacity: 0.82">
+                Settlement result appears after generation
+              </td>
+            </tr>
+            <tr>
+              <td colspan="4" style="padding-top: 0.6em; font-weight: bold">Advanced generation</td>
+            </tr>
             <tr data-tip="Select template or precreated heightmap to be used on generation">
               <td>
                 <i data-locked="0" id="lock_template" class="icon-lock-open"></i>

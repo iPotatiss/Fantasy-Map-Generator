@@ -116,7 +116,10 @@ function updateOutputToFollowInput(ev) {
   // generic case
   if (id.slice(-5) === "Input") {
     const output = document.getElementById(id.slice(0, -5) + "Output");
-    if (output) output.value = value;
+    if (output) {
+      output.value = value;
+      if (output.tagName === "OUTPUT") output.textContent = value;
+    }
   } else if (id.slice(-6) === "Output") {
     const input = document.getElementById(id.slice(0, -6) + "Input");
     if (input) input.value = value;
@@ -137,6 +140,7 @@ optionsContent.addEventListener("input", event => {
   else if (id === "themeHueInput") changeThemeHue(value);
   else if (id === "themeColorInput") changeDialogsTheme(themeColorInput.value, transparencyInput.value);
   else if (id === "transparencyInput") changeDialogsTheme(themeColorInput.value, value);
+  else if (id === "waterCoverageInput") GenerationDirector.updateWaterDescription(value);
 });
 
 optionsContent.addEventListener("change", event => {
@@ -149,6 +153,7 @@ optionsContent.addEventListener("change", event => {
   else if (id === "eraInput") changeEra();
   else if (id === "stateLabelsModeInput") options.stateLabelsMode = value;
   else if (id === "azgaarAssistant") toggleAssistant();
+  else if (id === "worldPresetInput") GenerationDirector.applyPreset(value);
 });
 
 optionsContent.addEventListener("click", event => {
@@ -600,6 +605,11 @@ function randomizeOptions() {
 
   // 'Options' settings
   if (randomize || !locked("points")) changeCellsDensity(4); // reset to default, no need to randomize
+  if (randomize || !locked("worldPreset")) worldPresetInput.value = "custom";
+  if (randomize || !locked("waterCoverage")) waterCoverageInput.value = waterCoverageOutput.value = 71;
+  if (randomize || !locked("settlementDensity")) settlementDensityInput.value = "balanced";
+  if (randomize || !locked("capitalImportance")) capitalImportanceInput.value = "prominent";
+  GenerationDirector.updateWaterDescription(waterCoverageInput.value);
   if (randomize || !locked("template")) randomizeHeightmapTemplate();
   if (randomize || !locked("statesNumber")) statesNumber.value = gauss(18, 5, 2, 30);
   if (randomize || !locked("provincesRatio")) provincesRatio.value = gauss(20, 10, 20, 100);

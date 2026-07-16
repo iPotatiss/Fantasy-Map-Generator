@@ -661,6 +661,7 @@ async function generate(options) {
     if (shouldRegenerateGrid(grid, precreatedSeed)) grid = precreatedGraph || generateGrid();
     else delete grid.cells.h;
     grid.cells.h = await HeightmapGenerator.generate(grid);
+    grid.cells.h = GenerationDirector.applyWaterCoverage(grid.cells.h, +ensureEl("waterCoverageInput").value);
     pack = {}; // reset pack
 
     Features.markupGrid();
@@ -691,10 +692,12 @@ async function generate(options) {
 
     Burgs.generate();
     States.generate();
+    Burgs.balanceStateSettlements();
     Routes.generate();
     Religions.generate();
 
     Burgs.specify();
+    GenerationDirector.updateSettlementSummary();
     States.collectStatistics();
     States.defineStateForms();
 
