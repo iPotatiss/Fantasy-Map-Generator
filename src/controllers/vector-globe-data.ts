@@ -20,6 +20,8 @@ export type VectorGlobeData = {
   routes: FeatureCollection<LineString, VectorProperties>;
   rivers: FeatureCollection<LineString, VectorProperties>;
   burgs: FeatureCollection<Point, VectorProperties>;
+  /** Non-capital settlements used for world-scale density clusters. */
+  burgClusters: FeatureCollection<Point, VectorProperties>;
   markers: FeatureCollection<Point, VectorProperties>;
   stateLabels: FeatureCollection<Point, VectorProperties>;
 };
@@ -506,6 +508,7 @@ export function buildVectorGlobeData(
     routes: collection(routes),
     rivers: collection(rivers),
     burgs: collection(burgs),
+    burgClusters: collection(burgs.filter(burg => !burg.properties.capital)),
     markers: collection(markerFeatures),
     stateLabels: collection(stateLabels)
   };

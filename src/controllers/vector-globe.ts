@@ -44,6 +44,7 @@ const SOURCE_IDS = {
   routes: "fmg-routes",
   rivers: "fmg-rivers",
   burgs: "fmg-burgs",
+  burgClusters: "fmg-burg-clusters",
   markers: "fmg-markers",
   stateLabels: "fmg-state-labels"
 } as const;
@@ -111,6 +112,16 @@ function addVectorSources(data: VectorGlobeData) {
   addGeoJsonSource(SOURCE_IDS.routes, data.routes);
   addGeoJsonSource(SOURCE_IDS.rivers, data.rivers);
   addGeoJsonSource(SOURCE_IDS.burgs, data.burgs);
+  const lowPower = vectorPerformanceProfile === "low-power";
+  vectorMap?.addSource(SOURCE_IDS.burgClusters, {
+    type: "geojson",
+    data: data.burgClusters,
+    cluster: true,
+    clusterMaxZoom: 3,
+    clusterRadius: lowPower ? 62 : 50,
+    tolerance: lowPower ? 0.5 : 0.25,
+    maxzoom: lowPower ? 7 : 8
+  });
   addGeoJsonSource(SOURCE_IDS.markers, data.markers);
   addGeoJsonSource(SOURCE_IDS.stateLabels, data.stateLabels);
 }
@@ -265,6 +276,52 @@ function addVectorLayers() {
       "text-color": "#343545",
       "text-halo-color": "rgba(250,248,238,0.82)",
       "text-halo-width": 1.5
+    }
+  });
+
+  // World and kingdom scales show settlement density instead of silently
+  // hiding every non-capital burg. Clusters split naturally as the user zooms,
+  // then hand over to the individual, clickable settlement layer at zoom 3.2.
+  vectorMap.addLayer({
+    id: "fmg-burg-clusters",
+    type: "circle",
+    source: SOURCE_IDS.burgClusters,
+    maxzoom: 3.2,
+    filter: ["has", "point_count"],
+    paint: {
+      "circle-radius": ["step", ["get", "point_count"], 10, 10, 13, 50, 17, 200, 21],
+      "circle-color": ["step", ["get", "point_count"], "#fffdf6", 10, "#f7e6ad", 50, "#efc96b"],
+      "circle-stroke-color": "#252936",
+      "circle-stroke-width": 1.5,
+      "circle-opacity": 0.96
+    }
+  });
+  vectorMap.addLayer({
+    id: "fmg-burg-cluster-counts",
+    type: "symbol",
+    source: SOURCE_IDS.burgClusters,
+    maxzoom: 3.2,
+    filter: ["has", "point_count"],
+    layout: {
+      "text-field": ["get", "point_count_abbreviated"],
+      "text-font": ["Open Sans Regular"],
+      "text-size": ["step", ["get", "point_count"], 10, 50, 11, 200, 12],
+      "text-allow-overlap": true,
+      "text-ignore-placement": true
+    },
+    paint: { "text-color": "#252936" }
+  });
+  vectorMap.addLayer({
+    id: "fmg-burg-cluster-singletons",
+    type: "circle",
+    source: SOURCE_IDS.burgClusters,
+    maxzoom: 3.2,
+    filter: ["!", ["has", "point_count"]],
+    paint: {
+      "circle-radius": ["interpolate", ["linear"], ["zoom"], 0, 2.2, 3.2, 4],
+      "circle-color": "#fffdf6",
+      "circle-stroke-color": "#252936",
+      "circle-stroke-width": 1
     }
   });
 
@@ -825,6 +882,31 @@ function handleBurgClick(point: { x: number; y: number }, alwaysOpenSettlement =
 
 function attachInteractions() {
   if (!vectorMap) return;
+  vectorMap.on("mouseenter", "fmg-burg-clusters", () => {
+    if (vectorMap) vectorMap.getCanvas().style.cursor = "zoom-in";
+  });
+  vectorMap.on("mouseleave", "fmg-burg-clusters", () => {
+    if (vectorMap) vectorMap.getCanvas().style.cursor = "grab";
+  });
+  vectorMap.on("click", "fmg-burg-clusters", async event => {
+    const cluster = event.features?.[0];
+    const clusterId = Number(cluster?.properties?.cluster_id);
+    if (!vectorMap || !cluster || cluster.geometry.type !== "Point" || !Number.isFinite(clusterId)) return;
+    vectorFeatureClickHandled = true;
+    try {
+      const source = vectorMap.getSource(SOURCE_IDS.burgClusters) as GeoJSONSource;
+      const expansionZoom = await source.getClusterExpansionZoom(clusterId);
+      vectorMap.easeTo({
+        center: cluster.geometry.coordinates as [number, number],
+        zoom: Math.min(3.35, Math.max(vectorMap.getZoom() + 0.8, expansionZoom)),
+        duration: vectorPerformanceProfile === "low-power" ? 280 : 450
+      });
+    } finally {
+      window.setTimeout(() => {
+        vectorFeatureClickHandled = false;
+      }, 0);
+    }
+  });
   for (const layer of INTERACTIVE_BURG_LAYERS) {
     vectorMap.on("mouseenter", layer, () => {
       if (vectorMap) vectorMap.getCanvas().style.cursor = "pointer";
@@ -920,6 +1002,7 @@ function applyVectorData(data: VectorGlobeData) {
   setSourceData(SOURCE_IDS.routes, data.routes);
   setSourceData(SOURCE_IDS.rivers, data.rivers);
   setSourceData(SOURCE_IDS.burgs, data.burgs);
+  setSourceData(SOURCE_IDS.burgClusters, data.burgClusters);
   setSourceData(SOURCE_IDS.markers, data.markers);
   setSourceData(SOURCE_IDS.stateLabels, data.stateLabels);
 }
@@ -1108,6 +1191,7 @@ export function getVectorGlobeDiagnostics() {
           routes: vectorData.routes.features.length,
           rivers: vectorData.rivers.features.length,
           burgs: vectorData.burgs.features.length,
+          burgClusters: vectorData.burgClusters.features.length,
           markers: vectorData.markers.features.length
         }
       : null

@@ -62,7 +62,11 @@ describe("vector globe data", () => {
           ]
         }
       ],
-      burgs: [0, { i: 1, cell: 0, x: 500, y: 250, name: "Center", population: 10 }],
+      burgs: [
+        0,
+        { i: 1, cell: 0, x: 500, y: 250, name: "Center", population: 10 },
+        { i: 2, cell: 0, x: 600, y: 250, name: "Capital", population: 15, capital: 1 }
+      ],
       markers: [],
       states: [],
       provinces: [],
@@ -114,6 +118,9 @@ describe("vector globe data", () => {
       properties: { burgId: 1, name: "Center" },
       geometry: { coordinates: [0, 0] }
     });
+    expect(data.burgs.features).toHaveLength(2);
+    expect(data.burgClusters.features).toHaveLength(1);
+    expect(data.burgClusters.features[0].properties).toMatchObject({ burgId: 1, capital: false });
   });
 
   it("ends rivers at the shoreline instead of drawing through ocean cells", () => {
