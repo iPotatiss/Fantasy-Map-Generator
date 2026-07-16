@@ -159,9 +159,14 @@ test.describe("vector globe and settlement maps", () => {
     await expect(page.locator(".fmg-settlement-view")).toBeVisible();
     await expect(page.locator(".fmg-settlement-view__title")).toHaveText(target!.name);
     await expect(page.locator(".fmg-settlement-view iframe")).toHaveAttribute("src", /preview=1/);
+    await expect(page.locator(".fmg-settlement-view iframe")).toHaveAttribute("src", /village-generator/);
     await expect(page.locator(".fmg-settlement-view")).toHaveAttribute("data-interactive", "true");
 
-    await page.getByRole("button", { name: "Return to globe" }).click();
+    const townSurface = page.locator(".fmg-settlement-view__zoom-surface");
+    await townSurface.dispatchEvent("wheel", { deltaY: -500 });
+    await expect(page.locator(".fmg-settlement-view iframe")).toHaveAttribute("style", /scale\(/);
+    await townSurface.dispatchEvent("wheel", { deltaY: 5000 });
+    await townSurface.dispatchEvent("wheel", { deltaY: 200 });
     await expect(page.locator(".fmg-settlement-view")).toHaveCount(0);
     await expect.poll(() => page.evaluate(() => (window as any).ThreeD.getGlobeRenderDiagnostics().zoom)).toBeLessThan(9);
     expect(errors).toEqual([]);

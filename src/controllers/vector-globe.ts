@@ -322,6 +322,7 @@ function addVectorLayers() {
     type: "symbol",
     source: SOURCE_IDS.burgs,
     minzoom: 3.1,
+    maxzoom: 7.1,
     layout: {
       "text-field": ["get", "name"],
       "text-font": ["Open Sans Regular"],
@@ -331,6 +332,30 @@ function addVectorLayers() {
       "text-justify": "auto",
       "text-padding": 3,
       "text-allow-overlap": false,
+      "symbol-sort-key": ["-", 0, ["get", "population"]]
+    },
+    paint: {
+      "text-color": "#272a36",
+      "text-halo-color": "rgba(255,253,246,0.96)",
+      "text-halo-width": 1.6,
+      "text-halo-blur": 0.15
+    }
+  });
+  vectorMap.addLayer({
+    id: "fmg-burg-labels-close",
+    type: "symbol",
+    source: SOURCE_IDS.burgs,
+    minzoom: 7.1,
+    layout: {
+      "text-field": ["get", "name"],
+      "text-font": ["Open Sans Regular"],
+      "text-size": ["interpolate", ["linear"], ["zoom"], 7.1, 15, 9, 17, 11, 20],
+      "text-variable-anchor": ["top", "bottom", "left", "right"],
+      "text-radial-offset": 0.72,
+      "text-justify": "auto",
+      "text-padding": 2,
+      "text-allow-overlap": true,
+      "text-ignore-placement": true,
       "symbol-sort-key": ["-", 0, ["get", "population"]]
     },
     paint: {
@@ -539,11 +564,12 @@ export function openVectorSettlement(burgId: number) {
   const back = document.createElement("button");
   back.type = "button";
   back.textContent = "← Return to globe";
-  back.addEventListener("click", () => {
+  const returnToGlobe = () => {
     vectorSettlementExiting = true;
     closeVectorSettlement();
     vectorMap?.easeTo({ zoom: SETTLEMENT_ENTRY_ZOOM + 0.5, duration: 450 });
-  });
+  };
+  back.addEventListener("click", returnToGlobe);
   const title = document.createElement("strong");
   title.className = "fmg-settlement-view__title";
   title.textContent = burg.name || "Settlement";
@@ -568,6 +594,62 @@ export function openVectorSettlement(burgId: number) {
   vectorPreloadedSettlement = null;
   vectorPreloadedSettlementId = 0;
   content.append(frame);
+
+  // Cross-origin town pages consume wheel events before the globe can see
+  // them. This parent surface provides one continuous zoom journey instead:
+  // scroll in to inspect the town and scroll out from the fitted view to leave.
+  const zoomSurface = document.createElement("div");
+  zoomSurface.className = "fmg-settlement-view__zoom-surface";
+  zoomSurface.setAttribute("aria-label", "Town map: scroll in to explore and scroll out to return to the globe");
+  const zoomHint = document.createElement("span");
+  zoomHint.textContent = "Scroll to explore town • scroll out to return to globe";
+  zoomSurface.append(zoomHint);
+  content.append(zoomSurface);
+  let townScale = 1;
+  let panX = 0;
+  let panY = 0;
+  let townDrag: { x: number; y: number } | null = null;
+  const applyTownTransform = () => {
+    frame.style.transform = `translate(${panX}px, ${panY}px) scale(${townScale})`;
+    zoomSurface.dataset.zoomed = String(townScale > 1.02);
+  };
+  zoomSurface.addEventListener(
+    "wheel",
+    event => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.deltaY > 0 && townScale <= 1.02) {
+        returnToGlobe();
+        return;
+      }
+      const nextScale = Math.min(4, Math.max(1, townScale * Math.exp(-event.deltaY * 0.0015)));
+      if (nextScale === townScale) return;
+      townScale = nextScale;
+      if (townScale === 1) {
+        panX = 0;
+        panY = 0;
+      }
+      applyTownTransform();
+    },
+    { passive: false }
+  );
+  zoomSurface.addEventListener("pointerdown", event => {
+    townDrag = { x: event.clientX, y: event.clientY };
+    zoomSurface.setPointerCapture(event.pointerId);
+  });
+  zoomSurface.addEventListener("pointermove", event => {
+    if (!townDrag || townScale <= 1) return;
+    panX += event.clientX - townDrag.x;
+    panY += event.clientY - townDrag.y;
+    townDrag = { x: event.clientX, y: event.clientY };
+    applyTownTransform();
+  });
+  zoomSurface.addEventListener("pointerup", () => {
+    townDrag = null;
+  });
+  zoomSurface.addEventListener("pointercancel", () => {
+    townDrag = null;
+  });
 
   const clouds = document.createElement("div");
   clouds.className = "fmg-settlement-view__clouds";
@@ -599,9 +681,17 @@ export function openVectorSettlement(burgId: number) {
   return true;
 }
 
-function getBurgNearestCenter(maxDistance = 260) {
+function getBurgNearestCenter(maxDistance = 48) {
   if (!vectorMap || !vectorData) return 0;
   const center = vectorMap.project(vectorMap.getCenter());
+  const markerAtCenter = vectorMap.queryRenderedFeatures(
+    [
+      [center.x - 18, center.y - 18],
+      [center.x + 18, center.y + 18]
+    ],
+    { layers: ["fmg-markers"] }
+  );
+  if (markerAtCenter.length) return 0;
   let closestId = 0;
   let closestDistance = maxDistance * maxDistance;
   for (const feature of vectorData.burgs.features) {
@@ -633,7 +723,7 @@ function scheduleSettlementMap() {
     () => {
       vectorSettlementTimer = 0;
       if ((vectorMap?.getZoom() || 0) >= SETTLEMENT_PRELOAD_ZOOM && !vectorSettlement) {
-        preloadSettlement(getBurgNearestCenter(220));
+        preloadSettlement(getBurgNearestCenter(96));
       }
       updateSettlementMap();
     },
@@ -694,7 +784,12 @@ function attachInteractions() {
     const rect = canvas.getBoundingClientRect();
     return { x: event.clientX - rect.left, y: event.clientY - rect.top };
   };
-  canvas.addEventListener("click", event => handleBurgClick(getCanvasPoint(event)));
+  canvas.addEventListener("click", event => {
+    const point = getCanvasPoint(event);
+    const markerAtPoint = vectorMap?.queryRenderedFeatures([point.x, point.y], { layers: ["fmg-markers"] });
+    if (markerAtPoint?.length) return;
+    handleBurgClick(point);
+  });
   canvas.addEventListener("dblclick", event => {
     if (!handleBurgClick(getCanvasPoint(event), true)) return;
     event.preventDefault();
@@ -713,7 +808,6 @@ function attachInteractions() {
   });
   vectorMap.on("zoom", () => {
     updateHud();
-    if ((vectorMap?.getZoom() || 0) >= SETTLEMENT_MAP_ZOOM) scheduleSettlementMap();
   });
   vectorMap.on("movestart", () => setMotionDetailPaused(true));
   vectorMap.on("moveend", scheduleSettlementMap);

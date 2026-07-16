@@ -401,7 +401,7 @@ class BurgModule {
         active: true,
         order: 9,
         features: { capital: true },
-        preview: "watabou-city"
+        preview: "watabou-village"
       },
       {
         name: "city",
@@ -409,7 +409,7 @@ class BurgModule {
         order: 8,
         percentile: 90,
         min: 5,
-        preview: "watabou-city"
+        preview: "watabou-village"
       },
       {
         name: "fort",
@@ -462,7 +462,7 @@ class BurgModule {
         active: true,
         order: 7,
         isDefault: true,
-        preview: "watabou-city"
+        preview: "watabou-village"
       }
     ];
   }
@@ -696,11 +696,10 @@ class BurgModule {
       "watabou-dwelling": (burg: Burg) => this.createWatabouDwellingLinks(burg)
     };
     if (burg.link) return { link: burg.link, preview: burg.link };
-
-    const group = options.burgs.groups.find((g: any) => g.name === burg.group);
-    if (!group?.preview || !previewGeneratorsMap[group.preview]) return { link: null, preview: null };
-
-    return previewGeneratorsMap[group.preview](burg);
+    // Use one coherent bird's-eye visual language across capitals, towns,
+    // villages and special settlement groups. The village generator produces
+    // the natural terrain, tree cover and building-level view used by the globe.
+    return previewGeneratorsMap["watabou-village"](burg);
   }
 
   add([x, y]: [number, number]) {

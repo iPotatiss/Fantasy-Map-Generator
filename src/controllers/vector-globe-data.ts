@@ -246,11 +246,22 @@ function getFeatureRing(
   return getClosedRing(naturalizeRing(points, coast).map(point => mapPointToVectorLngLat(point, width, height)));
 }
 
-function getSharedEdge(pack: PackedGraph, fromCell: number, toCell: number, width: number, height: number) {
+function getSharedEdge(
+  pack: PackedGraph,
+  fromCell: number,
+  toCell: number,
+  width: number,
+  height: number,
+  coast?: NaturalCoastGeometry
+) {
   const toVertices = new Set(pack.cells.v[toCell]);
   const shared = pack.cells.v[fromCell].filter(vertexId => toVertices.has(vertexId));
   if (shared.length < 2) return null;
-  return shared.slice(0, 2).map(vertexId => mapPointToVectorLngLat(pack.vertices.p[vertexId], width, height));
+  return shared.slice(0, 2).map(vertexId => {
+    const point = pack.vertices.p[vertexId];
+    const alignedPoint = coast?.vertices.get(pointKey(point)) || point;
+    return mapPointToVectorLngLat(alignedPoint, width, height);
+  });
 }
 
 export function getRiverDisplayPoints(
@@ -307,7 +318,7 @@ export function buildVectorGlobeData(
     const stateId = Number(pack.cells.state[cellId] || 0);
     for (const neighborId of pack.cells.c[cellId]) {
       if (neighborId <= cellId || pack.cells.h[neighborId] < 20) continue;
-      const sharedEdge = getSharedEdge(pack, cellId, neighborId, width, height);
+      const sharedEdge = getSharedEdge(pack, cellId, neighborId, width, height, naturalCoast);
       if (!sharedEdge) continue;
 
       const neighborState = Number(pack.cells.state[neighborId] || 0);

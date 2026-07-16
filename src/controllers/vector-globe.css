@@ -151,7 +151,45 @@
   height: 100%;
   border: 0;
   background: #e8dfca;
-  pointer-events: auto;
+  pointer-events: none;
+  transform-origin: center;
+  transition: transform 120ms ease-out;
+  will-change: transform;
+}
+
+.fmg-settlement-view__zoom-surface {
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  overflow: hidden;
+  cursor: grab;
+  touch-action: none;
+}
+
+.fmg-settlement-view__zoom-surface:active {
+  cursor: grabbing;
+}
+
+.fmg-settlement-view__zoom-surface span {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  padding: 8px 12px;
+  border: 1px solid rgb(255 255 255 / 26%);
+  border-radius: 999px;
+  color: #fff;
+  background: rgb(27 33 47 / 74%);
+  box-shadow: 0 6px 20px rgb(0 0 0 / 18%);
+  opacity: 0.88;
+  pointer-events: none;
+  transform: translateX(-50%);
+  transition: opacity 180ms ease;
+  font: 500 12px/1.2 system-ui, sans-serif;
+  white-space: nowrap;
+}
+
+.fmg-settlement-view__zoom-surface[data-zoomed="true"] span {
+  opacity: 0;
 }
 
 .fmg-settlement-view__clouds {
