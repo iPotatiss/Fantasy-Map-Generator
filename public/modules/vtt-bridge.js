@@ -449,6 +449,11 @@
     }
     try {
       applyGenerationSettings(data.settings, data.name);
+      // Blank VTT startup intentionally skips FMG's normal generation path, whose
+      // preset step turns the raw all-layers-on HTML state into a readable map.
+      // Reset only newly generated workspace worlds; snapshot loading must retain
+      // the layer choices saved with that project.
+      if (typeof applyLayersPreset === "function") applyLayersPreset("political");
       generationRequest = data;
       suppressDirtyUntil = Date.now() + 1000;
       clearTimeout(generationTimer);

@@ -63,6 +63,8 @@ function loadBridge() {
   const setGlobeProjection = vi.fn();
   const isGlobeReady = vi.fn(() => true);
   const regenerateMap = vi.fn();
+  const applyLayersPreset = vi.fn();
+  const uploadMap = vi.fn();
   const lock = vi.fn();
   const unlock = vi.fn();
   const options = {};
@@ -72,7 +74,8 @@ function loadBridge() {
     ThreeD: { setGlobeProjection, isGlobeReady },
     addEventListener: vi.fn((type: string, listener: (event: Record<string, unknown>) => void) => {
       listeners[type] = listener;
-    })
+    }),
+    removeEventListener: vi.fn()
   } as Record<string, unknown>;
   const cells = { v: [[]], h: [1], biome: [0], state: [0], province: [0], culture: [0], religion: [0], pop: [0] };
   const pack = {
@@ -100,6 +103,8 @@ function loadBridge() {
     "mapCoordinates",
     "biomesData",
     "regenerateMap",
+    "applyLayersPreset",
+    "uploadMap",
     "lock",
     "unlock",
     "options",
@@ -118,6 +123,8 @@ function loadBridge() {
     null,
     null,
     regenerateMap,
+    applyLayersPreset,
+    uploadMap,
     lock,
     unlock,
     options,
@@ -131,6 +138,8 @@ function loadBridge() {
     isGlobeReady,
     setGlobeProjection,
     regenerateMap,
+    applyLayersPreset,
+    uploadMap,
     culturesSet,
     heightUnit,
     temperatureScale,
@@ -389,6 +398,10 @@ describe("VTT bridge protocol", () => {
     });
 
     expect(bridge.regenerateMap).toHaveBeenCalledTimes(1);
+    expect(bridge.applyLayersPreset).toHaveBeenCalledWith("political");
+    expect(bridge.applyLayersPreset.mock.invocationCallOrder[0]).toBeLessThan(
+      bridge.regenerateMap.mock.invocationCallOrder[0]
+    );
     expect(bridge.culturesSet.options).toHaveLength(3);
     expect(bridge.heightUnit.options).toHaveLength(3);
     expect(bridge.temperatureScale.options).toHaveLength(3);
@@ -396,6 +409,25 @@ describe("VTT bridge protocol", () => {
     expect(bridge.heightUnit.value).toBe("ft");
     expect(bridge.temperatureScale.value).toBe("°F");
     bridge.emit("map:generated");
+  });
+
+  it("preserves the layer choices stored in loaded project snapshots", () => {
+    const bridge = loadBridge();
+    const sessionId = "session-1234567890abcdef";
+    bridge.send({ type: "FMG_CONNECT", protocol: 2, sessionId });
+
+    bridge.send({
+      type: "FMG_LOAD_SNAPSHOT",
+      protocol: 2,
+      sessionId,
+      requestId: "load-1",
+      snapshot: "saved map data"
+    });
+
+    expect(bridge.uploadMap).toHaveBeenCalledTimes(1);
+    expect(bridge.applyLayersPreset).not.toHaveBeenCalled();
+    bridge.emit("map:generated");
+    expect(bridge.posted.at(-1)?.message).toMatchObject({ type: "FMG_MAP_LOADED", requestId: "load-1" });
   });
 
   it("bounds requested raster resolution", () => {

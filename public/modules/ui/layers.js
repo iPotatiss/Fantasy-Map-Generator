@@ -137,13 +137,24 @@ function restoreCustomPresets() {
   presets = storedPresets;
 }
 
-// run on map generation
-function applyLayersPreset() {
-  let preset = localStorage.getItem("preset") || ensureEl("layersPreset").value;
-  if (!(preset in presets)) preset = "political"; // fallback to default if preset is removed
-  setLayersPreset(preset);
+// Run on map generation. An explicit preset is reserved for controlled embeds:
+// it always uses the canonical built-in definition and does not overwrite the
+// user's native FMG layer preference in localStorage.
+function applyLayersPreset(explicitPreset) {
+  const hasExplicitPreset = typeof explicitPreset === "string";
+  const availablePresets = hasExplicitPreset ? getDefaultPresets() : presets;
+  let preset = hasExplicitPreset ? explicitPreset : localStorage.getItem("preset") || ensureEl("layersPreset").value;
+  if (!(preset in availablePresets)) preset = "political"; // fallback to default if preset is removed
 
-  const layers = presets[preset]; // layers to be turned on
+  if (hasExplicitPreset) {
+    ensureEl("layersPreset").value = preset;
+    ensureEl("removePresetButton").style.display = "none";
+    ensureEl("savePresetButton").style.display = "none";
+  } else {
+    setLayersPreset(preset);
+  }
+
+  const layers = availablePresets[preset]; // layers to be turned on
   document.querySelectorAll("#mapLayers > li").forEach(el => {
     const shouldBeOn = layers.includes(el.id);
     if (shouldBeOn) el.classList.remove("buttonoff");
