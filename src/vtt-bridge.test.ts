@@ -12,7 +12,7 @@ function createClassList(initial: string[] = []) {
   };
 }
 
-function loadBridge() {
+function loadBridge({ initialized = true }: { initialized?: boolean } = {}) {
   const posted: PostedMessage[] = [];
   const listeners: Record<string, (event: Record<string, unknown>) => void> = {};
   const parent = {
@@ -71,6 +71,7 @@ function loadBridge() {
   const changeCellsDensity = vi.fn();
   const window = {
     parent,
+    FMG_INITIALIZED: initialized,
     ThreeD: { setGlobeProjection, isGlobeReady },
     addEventListener: vi.fn((type: string, listener: (event: Record<string, unknown>) => void) => {
       listeners[type] = listener;
@@ -143,6 +144,10 @@ function loadBridge() {
     culturesSet,
     heightUnit,
     temperatureScale,
+    markInitialized: () => {
+      window.FMG_INITIALIZED = true;
+      listeners["fmg:initialized"]?.({});
+    },
     send: (data: Record<string, unknown>, origin = "https://app.example", source: unknown = parent) =>
       listeners.message({ data, origin, source }),
     emit: (type: string, event: Record<string, unknown> = {}) => listeners[type]?.(event),
@@ -151,6 +156,14 @@ function loadBridge() {
 }
 
 describe("VTT bridge protocol", () => {
+  it("does not announce readiness until asynchronous FMG startup is complete", () => {
+    const bridge = loadBridge({ initialized: false });
+
+    expect(bridge.posted).toEqual([]);
+    bridge.markInitialized();
+    expect(bridge.posted.at(-1)?.message).toMatchObject({ type: "FMG_READY", protocol: 2 });
+  });
+
   it("announces protocol 2 without map data", () => {
     const { posted } = loadBridge();
 

@@ -279,6 +279,10 @@ oceanLayers
   .attr("width", graphWidth)
   .attr("height", graphHeight);
 
+// The VTT bridge must not accept generation commands until this asynchronous
+// startup has finished. DOMContentLoaded alone is too early because the blank
+// workspace still has to restore its style and default interactions.
+window.FMG_INITIALIZED = false;
 document.addEventListener("DOMContentLoaded", async () => {
   const isBlankVttProject = new URL(window.location.href).searchParams.get("vttBlank") === "1";
   if (!location.hostname) {
@@ -303,6 +307,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   restoreDefaultEvents(); // apply default viewbox events
   if (!isBlankVttProject) initiateAutosave();
   initTourPromptButton();
+  window.FMG_INITIALIZED = true;
+  window.dispatchEvent(new CustomEvent("fmg:initialized"));
 });
 
 function hideLoading() {

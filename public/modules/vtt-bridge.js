@@ -767,9 +767,12 @@
       );
     } catch (e) {}
   }
-  if (document.readyState === "complete" || document.readyState === "interactive") announce();
-  else window.addEventListener("DOMContentLoaded", announce, false);
-  window.addEventListener("load", announce, false); // a second announce is harmless
+  function announceIfInitialized() {
+    if (window.FMG_INITIALIZED === true) announce();
+  }
+  announceIfInitialized();
+  window.addEventListener("fmg:initialized", announceIfInitialized, false);
+  window.addEventListener("load", announceIfInitialized, false); // a second announce is harmless
 
   // Expose for in-page testing / a future toolbar action.
   window.VttBridge = {
