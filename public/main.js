@@ -732,6 +732,11 @@ async function generate(options) {
     INFO && console.groupEnd("Generated Map " + seed);
   } catch (error) {
     ERROR && console.error(error);
+    window.dispatchEvent(
+      new CustomEvent("map:generation-error", {
+        detail: { message: error && error.message ? error.message : String(error || "World generation failed") }
+      })
+    );
     const parsedError = parseError(error);
     clearMainTip();
 

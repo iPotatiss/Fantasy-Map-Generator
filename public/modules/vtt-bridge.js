@@ -17,6 +17,7 @@
   var viewQueue = [];
   var viewBusy = false;
   var generationRequest = null;
+  var generationTimer = null;
   var suppressDirtyUntil = 0;
   var dirtyTimer = null;
 
@@ -334,10 +335,12 @@
     if (!control || value == null) return false;
     try {
       control.value = String(value);
-      var output = document.getElementById(id.replace(/Input$/, "Output"));
-      if (output) {
-        output.value = String(value);
-        output.textContent = String(value);
+      if (/Input$/.test(id)) {
+        var output = document.getElementById(id.replace(/Input$/, "Output"));
+        if (output && output !== control) {
+          output.value = String(value);
+          output.textContent = String(value);
+        }
       }
       return true;
     } catch (e) {
@@ -440,13 +443,27 @@
       return;
     }
 
-    applyGenerationSettings(data.settings, data.name);
-    generationRequest = data;
-    suppressDirtyUntil = Date.now() + 1000;
+    if (generationRequest) {
+      protocolError(data, "GENERATION_BUSY", "A world is already being generated");
+      return;
+    }
     try {
+      applyGenerationSettings(data.settings, data.name);
+      generationRequest = data;
+      suppressDirtyUntil = Date.now() + 1000;
+      clearTimeout(generationTimer);
+      generationTimer = setTimeout(function () {
+        if (!generationRequest) return;
+        var timedOutRequest = generationRequest;
+        generationRequest = null;
+        generationTimer = null;
+        protocolError(timedOutRequest, "GENERATION_TIMEOUT", "World generation took too long to finish");
+      }, 300000);
       regenerateMap({ seed: data.settings && data.settings.seed ? String(data.settings.seed) : undefined });
     } catch (error) {
       generationRequest = null;
+      clearTimeout(generationTimer);
+      generationTimer = null;
       protocolError(data, "GENERATION_FAILED", error && error.message ? error.message : "World generation failed");
     }
   }
@@ -544,11 +561,24 @@
     if (generationRequest) {
       var request = generationRequest;
       generationRequest = null;
+      clearTimeout(generationTimer);
+      generationTimer = null;
       suppressDirtyUntil = Date.now() + 1000;
       protocolReply("FMG_MAP_CREATED", request, {});
       return;
     }
     announceDirty();
+  }
+
+  function onMapGenerationError(event) {
+    if (!generationRequest) return;
+    var request = generationRequest;
+    generationRequest = null;
+    clearTimeout(generationTimer);
+    generationTimer = null;
+    var detail = event && event.detail;
+    var message = detail && typeof detail.message === "string" ? detail.message : "World generation failed";
+    protocolError(request, "GENERATION_FAILED", message);
   }
 
   function handleConnect(ev, data) {
@@ -710,6 +740,7 @@
 
   window.addEventListener("message", onRequest, false);
   window.addEventListener("map:generated", onMapGenerated, false);
+  window.addEventListener("map:generation-error", onMapGenerationError, false);
   document.addEventListener("change", announceDirty, true);
   document.addEventListener("pointerup", function (event) {
     if (event.target && document.getElementById("map") && document.getElementById("map").contains(event.target)) announceDirty();

@@ -20,9 +20,26 @@ function loadBridge() {
   };
   const standard = { classList: createClassList(["pressed"]), click: () => undefined };
   const globe = { classList: createClassList(), click: () => undefined };
+  const createSelect = (value: string, optionValues: string[]) => {
+    const options = optionValues.map(optionValue => ({ value: optionValue, dataset: { max: "32" } }));
+    const select = { value, options, selectedOptions: options.filter(option => option.value === value) };
+    Object.defineProperty(select, "textContent", {
+      set: () => {
+        select.options.length = 0;
+        select.selectedOptions.length = 0;
+      }
+    });
+    return select;
+  };
+  const culturesSet = createSelect("world", ["world", "european", "highFantasy"]);
+  const heightUnit = createSelect("m", ["m", "ft", "f"]);
+  const temperatureScale = createSelect("°C", ["°C", "°F", "K"]);
   const elements = new Map<string, unknown>([
     ["viewStandard", standard],
-    ["viewGlobe", globe]
+    ["viewGlobe", globe],
+    ["culturesSet", culturesSet],
+    ["heightUnit", heightUnit],
+    ["temperatureScale", temperatureScale]
   ]);
 
   standard.click = () => {
@@ -38,12 +55,18 @@ function loadBridge() {
 
   const document = {
     readyState: "complete",
+    documentElement: { classList: createClassList() },
     addEventListener: vi.fn(),
     createElement: vi.fn(),
     getElementById: (id: string) => elements.get(id) ?? null
   };
   const setGlobeProjection = vi.fn();
   const isGlobeReady = vi.fn(() => true);
+  const regenerateMap = vi.fn();
+  const lock = vi.fn();
+  const unlock = vi.fn();
+  const options = {};
+  const changeCellsDensity = vi.fn();
   const window = {
     parent,
     ThreeD: { setGlobeProjection, isGlobeReady },
@@ -76,9 +99,30 @@ function loadBridge() {
     "graphHeight",
     "mapCoordinates",
     "biomesData",
+    "regenerateMap",
+    "lock",
+    "unlock",
+    "options",
+    "changeCellsDensity",
     bridgeSource
   );
-  run(window, document, vi.fn(), vi.fn(), vi.fn(), pack, 1000, 500, null, null);
+  run(
+    window,
+    document,
+    vi.fn(),
+    vi.fn(),
+    vi.fn(),
+    pack,
+    1000,
+    500,
+    null,
+    null,
+    regenerateMap,
+    lock,
+    unlock,
+    options,
+    changeCellsDensity
+  );
 
   return {
     pack,
@@ -86,8 +130,13 @@ function loadBridge() {
     posted,
     isGlobeReady,
     setGlobeProjection,
+    regenerateMap,
+    culturesSet,
+    heightUnit,
+    temperatureScale,
     send: (data: Record<string, unknown>, origin = "https://app.example", source: unknown = parent) =>
       listeners.message({ data, origin, source }),
+    emit: (type: string, event: Record<string, unknown> = {}) => listeners[type]?.(event),
     vttBridge: window.VttBridge as { clampRasterScale: (value: unknown, width: number, height: number) => number }
   };
 }
@@ -101,7 +150,7 @@ describe("VTT bridge protocol", () => {
         message: {
           type: "FMG_READY",
           protocol: 2,
-          capabilities: ["view.switch"]
+          capabilities: ["view.switch", "map.generate", "map.snapshot", "map.restore", "map.title", "tools.open"]
         },
         origin: "*"
       }
@@ -130,7 +179,7 @@ describe("VTT bridge protocol", () => {
           sessionId,
           requestId: "connect-1",
           view: "builder",
-          capabilities: ["view.switch"]
+          capabilities: ["view.switch", "map.generate", "map.snapshot", "map.restore", "map.title", "tools.open"]
         },
         origin: "https://app.example"
       },
@@ -316,6 +365,37 @@ describe("VTT bridge protocol", () => {
     bridge.send({ type: "FMG_REQUEST_IMAGE", requestId: "legacy-2", format: "png" });
 
     expect(bridge.posted).toHaveLength(count);
+  });
+
+  it("applies generation settings without erasing select options", () => {
+    const bridge = loadBridge();
+    const sessionId = "session-1234567890abcdef";
+    bridge.send({ type: "FMG_CONNECT", protocol: 2, sessionId });
+
+    bridge.send({
+      type: "FMG_CREATE_MAP",
+      protocol: 2,
+      sessionId,
+      requestId: "generate-1",
+      name: "Test World",
+      settings: {
+        preset: "custom",
+        template: "random",
+        cultureSet: "highFantasy",
+        heightUnit: "ft",
+        temperatureScale: "°F",
+        points: 4
+      }
+    });
+
+    expect(bridge.regenerateMap).toHaveBeenCalledTimes(1);
+    expect(bridge.culturesSet.options).toHaveLength(3);
+    expect(bridge.heightUnit.options).toHaveLength(3);
+    expect(bridge.temperatureScale.options).toHaveLength(3);
+    expect(bridge.culturesSet.value).toBe("highFantasy");
+    expect(bridge.heightUnit.value).toBe("ft");
+    expect(bridge.temperatureScale.value).toBe("°F");
+    bridge.emit("map:generated");
   });
 
   it("bounds requested raster resolution", () => {
