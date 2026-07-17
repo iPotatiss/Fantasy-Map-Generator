@@ -345,6 +345,17 @@
     }
   }
 
+  function setTemplateValue(value) {
+    var control = document.getElementById("templateInput");
+    if (!control || !value) return false;
+    var matchingOption = Array.prototype.some.call(control.options || [], function (option) { return option.value === value; });
+    if (!matchingOption && typeof Option === "function") {
+      control.replaceChildren(new Option(value.replace(/([A-Z])/g, " $1").replace(/^./, function (letter) { return letter.toUpperCase(); }), value, true, true));
+    }
+    control.value = value;
+    return control.value === value;
+  }
+
   function applyGenerationSettings(settings, name) {
     settings = settings && typeof settings === "object" ? settings : {};
     var preset = typeof settings.preset === "string" ? settings.preset : "custom";
@@ -355,18 +366,68 @@
     setControlValue("waterCoverageInput", clampInteger(settings.waterCoverage, 5, 95, 71));
     setControlValue("settlementDensityInput", settings.settlementDensity || "balanced");
     setControlValue("capitalImportanceInput", settings.capitalImportance || "prominent");
-    setControlValue("statesNumber", clampInteger(settings.states, 1, 100, 18));
+    setControlValue("statesNumber", clampInteger(settings.states, 0, 100, 18));
+    setControlValue("provincesRatio", clampInteger(settings.provincesRatio, 0, 100, 20));
+    setControlValue("sizeVariety", Math.max(0, Math.min(10, +settings.sizeVariety || 4)));
+    setControlValue("growthRate", Math.max(0.1, Math.min(2, +settings.growthRate || 1.5)));
     setControlValue("culturesInput", clampInteger(settings.cultures, 1, 50, 12));
     setControlValue("religionsNumber", clampInteger(settings.religions, 0, 50, 6));
+    var settlementCount = clampInteger(settings.settlementCount, 0, 1000, 1000);
+    setControlValue("manorsInput", settlementCount);
+    setControlValue("manorsOutput", settlementCount === 1000 ? "auto" : settlementCount);
     setControlValue("culturesSet", settings.cultureSet || "world");
+    setControlValue("stateLabelsModeInput", settings.stateLabelsMode || "auto");
     setControlValue("mapName", typeof name === "string" && name.trim() ? name.trim().slice(0, 120) : "Untitled World");
+
+    if (settings.template && settings.template !== "random") {
+      setTemplateValue(settings.template);
+      if (typeof lock === "function") lock("template");
+    } else if (typeof unlock === "function") unlock("template");
+
+    var automaticPosition = settings.automaticWorldPosition !== false;
+    if (automaticPosition && typeof unlock === "function") {
+      ["mapSize", "latitude", "longitude"].forEach(unlock);
+    } else {
+      setControlValue("mapSizeInput", clampInteger(settings.mapSize, 1, 100, 50));
+      setControlValue("latitudeInput", clampInteger(settings.latitude, 0, 100, 50));
+      setControlValue("longitudeInput", clampInteger(settings.longitude, 0, 100, 50));
+    }
+
+    var equator = clampInteger(settings.temperatureEquator, -50, 50, 25);
+    var northPole = clampInteger(settings.temperatureNorthPole, -50, 50, -25);
+    var southPole = clampInteger(settings.temperatureSouthPole, -50, 50, -15);
+    setControlValue("temperatureEquatorInput", equator);
+    setControlValue("temperatureNorthPoleInput", northPole);
+    setControlValue("temperatureSouthPoleInput", southPole);
+    setControlValue("precInput", clampInteger(settings.precipitation, 0, 500, 100));
+    if (typeof options !== "undefined" && options) {
+      options.temperatureEquator = equator;
+      options.temperatureNorthPole = northPole;
+      options.temperatureSouthPole = southPole;
+      options.stateLabelsMode = settings.stateLabelsMode || "auto";
+    }
+
+    setControlValue("distanceUnitInput", settings.distanceUnit || "km");
+    setControlValue("distanceScaleInput", Math.max(0.01, Math.min(20, +settings.distanceScale || 3)));
+    setControlValue("heightUnit", settings.heightUnit || "m");
+    setControlValue("heightExponentInput", Math.max(1.5, Math.min(2.2, +settings.heightExponent || 2)));
+    setControlValue("temperatureScale", settings.temperatureScale || "°C");
+    setControlValue("populationRateInput", clampInteger(settings.populationRate, 10, 10000, 1000));
+    setControlValue("urbanizationInput", Math.max(0.01, Math.min(5, +settings.urbanization || 1)));
+    setControlValue("urbanDensityInput", clampInteger(settings.urbanDensity, 1, 200, 10));
+    if (typeof distanceScale !== "undefined") distanceScale = +settings.distanceScale || 3;
+    if (typeof populationRate !== "undefined") populationRate = clampInteger(settings.populationRate, 10, 10000, 1000);
+    if (typeof urbanization !== "undefined") urbanization = Math.max(0.01, Math.min(5, +settings.urbanization || 1));
+    if (typeof urbanDensity !== "undefined") urbanDensity = clampInteger(settings.urbanDensity, 1, 200, 10);
 
     var points = clampInteger(settings.points, 1, 13, 4);
     if (typeof changeCellsDensity === "function") changeCellsDensity(points);
     else setControlValue("pointsInput", points);
 
     if (typeof lock === "function") {
-      ["waterCoverage", "settlementDensity", "capitalImportance", "statesNumber", "cultures", "religionsNumber", "culturesSet", "points", "mapName"].forEach(function (option) {
+      var lockedOptions = ["waterCoverage", "settlementDensity", "capitalImportance", "statesNumber", "provincesRatio", "sizeVariety", "growthRate", "cultures", "religionsNumber", "manors", "culturesSet", "stateLabelsMode", "temperatureEquator", "temperatureNorthPole", "temperatureSouthPole", "prec", "distanceScale", "heightExponent", "populationRate", "urbanization", "urbanDensity", "points", "mapName"];
+      if (!automaticPosition) lockedOptions.push("mapSize", "latitude", "longitude");
+      lockedOptions.forEach(function (option) {
         try { lock(option); } catch (e) {}
       });
     }

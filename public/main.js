@@ -280,6 +280,7 @@ oceanLayers
   .attr("height", graphHeight);
 
 document.addEventListener("DOMContentLoaded", async () => {
+  const isBlankVttProject = new URL(window.location.href).searchParams.get("vttBlank") === "1";
   if (!location.hostname) {
     const wiki = "https://github.com/Azgaar/Fantasy-Map-Generator/wiki/Run-FMG-locally";
     alertMessage.innerHTML = /* html */ `Fantasy Map Generator cannot run serverless. Follow the <a href="${wiki}" target="_blank">instructions</a> on how you can easily run a local web-server`;
@@ -300,7 +301,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     await checkLoadParameters();
   }
   restoreDefaultEvents(); // apply default viewbox events
-  initiateAutosave();
+  if (!isBlankVttProject) initiateAutosave();
   initTourPromptButton();
 });
 
@@ -320,6 +321,14 @@ function showLoading() {
 async function checkLoadParameters() {
   const url = new URL(window.location.href);
   const params = url.searchParams;
+
+  // The VTT project workspace owns generation and persistence. Start with a
+  // valid, styled but genuinely empty canvas instead of generating a disposable
+  // random world behind its setup screen.
+  if (params.get("vttBlank") === "1") {
+    await applyStyleOnLoad();
+    return;
+  }
 
   // of there is a valid maplink, try to load .map/.gz file from URL
   if (params.get("maplink")) {
