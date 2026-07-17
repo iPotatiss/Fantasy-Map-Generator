@@ -3,9 +3,8 @@ import "maplibre-gl/dist/maplibre-gl.css";
 import "./vector-globe.css";
 import {
   buildVectorGlobeData,
+  getVectorGlobeContentMaxLatitude,
   mapPointToVectorLngLat,
-  VECTOR_GLOBE_CONTENT_MAX_LATITUDE,
-  VECTOR_GLOBE_POLAR_CAP_DEGREES,
   type VectorGlobeData
 } from "./vector-globe-data";
 
@@ -1161,14 +1160,15 @@ export function focusVectorGlobeOnBurg(burgId: number, zoom = SETTLEMENT_ENTRY_Z
 }
 
 export function getVectorGlobeDiagnostics() {
+  const contentMaxLatitude = getVectorGlobeContentMaxLatitude(graphWidth, graphHeight);
   return {
     renderer: "maplibre-vector",
     ready: vectorReady,
     stage: vectorStage,
     zoom: vectorMap?.getZoom() || 0,
     maxZoom: VECTOR_GLOBE_MAX_ZOOM,
-    contentMaxLatitude: VECTOR_GLOBE_CONTENT_MAX_LATITUDE,
-    polarCapDegrees: VECTOR_GLOBE_POLAR_CAP_DEGREES,
+    contentMaxLatitude,
+    polarCapDegrees: 90 - contentMaxLatitude,
     dataBuildMs: vectorDataBuildMs,
     performanceProfile: vectorPerformanceProfile,
     pixelRatio: vectorPixelRatio,

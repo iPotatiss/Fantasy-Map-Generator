@@ -1,12 +1,24 @@
 import { describe, expect, it } from "vitest";
 import type { PackedGraph } from "../types/PackedGraph";
-import { buildVectorGlobeData, getRiverDisplayPoints, mapPointToVectorLngLat } from "./vector-globe-data";
+import {
+  buildVectorGlobeData,
+  getRiverDisplayPoints,
+  getVectorGlobeContentMaxLatitude,
+  mapPointToVectorLngLat
+} from "./vector-globe-data";
 
 describe("vector globe data", () => {
-  it("maps the rectangular FMG extent into a pole-safe longitude and latitude range", () => {
-    expect(mapPointToVectorLngLat([0, 0], 1000, 500)).toEqual([-180, 67.5]);
+  it("maps the FMG extent as an aspect-preserving Mercator source with pole-safe caps", () => {
+    const maxLatitude = getVectorGlobeContentMaxLatitude(1000, 500);
+    expect(maxLatitude).toBeCloseTo(66.513, 3);
+    expect(mapPointToVectorLngLat([0, 0], 1000, 500)).toEqual([-180, maxLatitude]);
     expect(mapPointToVectorLngLat([500, 250], 1000, 500)).toEqual([0, 0]);
-    expect(mapPointToVectorLngLat([1000, 500], 1000, 500)).toEqual([180, -67.5]);
+    expect(mapPointToVectorLngLat([1000, 500], 1000, 500)).toEqual([180, -maxLatitude]);
+
+    const onePixelEast = mapPointToVectorLngLat([501, 250], 1000, 500);
+    const onePixelNorth = mapPointToVectorLngLat([500, 249], 1000, 500);
+    expect(onePixelEast[0]).toBeCloseTo(onePixelNorth[1], 5);
+    expect(getVectorGlobeContentMaxLatitude(1000, 1000)).toBeLessThanOrEqual(80);
   });
 
   it("keeps routes, rivers and settlements as semantic vector features", () => {
@@ -86,9 +98,10 @@ describe("vector globe data", () => {
       useStateColors: true
     });
 
+    const maxLatitude = getVectorGlobeContentMaxLatitude(1000, 500);
     expect(data.routes.features[0].geometry.coordinates).toEqual([
-      [-180, 67.5],
-      [180, -67.5]
+      [-180, maxLatitude],
+      [180, -maxLatitude]
     ]);
     expect(data.rivers.features[0].properties.name).toBe("Test River");
     expect(data.polarCaps.features).toHaveLength(72);
@@ -108,11 +121,11 @@ describe("vector globe data", () => {
       })
     ).toBe(true);
     expect(data.landmasses.features[0].geometry.coordinates[0]).toEqual([
-      [-180, 67.5],
-      [180, 67.5],
-      [180, -67.5],
-      [-180, -67.5],
-      [-180, 67.5]
+      [-180, maxLatitude],
+      [180, maxLatitude],
+      [180, -maxLatitude],
+      [-180, -maxLatitude],
+      [-180, maxLatitude]
     ]);
     expect(data.burgs.features[0]).toMatchObject({
       properties: { burgId: 1, name: "Center" },

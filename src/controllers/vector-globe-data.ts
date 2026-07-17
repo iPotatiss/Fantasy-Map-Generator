@@ -2,11 +2,12 @@ import type { Feature, FeatureCollection, LineString, MultiLineString, Point, Po
 import type { PackedGraph } from "../types/PackedGraph";
 import { getIsolines } from "../utils/pathUtils";
 
-// FMG generates a flat world with no real polar topology. Keep its content
-// inside the habitable latitudes and let the globe's ocean background form
-// true caps, instead of crushing the full map width into near-polar spikes.
-export const VECTOR_GLOBE_POLAR_CAP_DEGREES = 22.5;
-export const VECTOR_GLOBE_CONTENT_MAX_LATITUDE = 90 - VECTOR_GLOBE_POLAR_CAP_DEGREES;
+// FMG's flat canvas is treated as a Mercator source. Using its real aspect ratio
+// preserves local proportions when it wraps around 360 degrees, while a small
+// ocean cap keeps the source edge away from the degenerate geographic poles.
+export const VECTOR_GLOBE_MIN_POLAR_CAP_DEGREES = 10;
+const VECTOR_GLOBE_MAX_LATITUDE = 90 - VECTOR_GLOBE_MIN_POLAR_CAP_DEGREES;
+const VECTOR_GLOBE_MAX_MERCATOR_Y = Math.asinh(Math.tan((VECTOR_GLOBE_MAX_LATITUDE * Math.PI) / 180));
 
 type VectorProperties = Record<string, boolean | number | string | null>;
 
@@ -37,12 +38,19 @@ const collection = <TGeometry extends GeoJSON.Geometry>(
   features: Array<Feature<TGeometry, VectorProperties>>
 ): FeatureCollection<TGeometry, VectorProperties> => ({ type: "FeatureCollection", features });
 
-function getPolarCaps() {
+export function getVectorGlobeContentMaxLatitude(width: number, height: number) {
+  const safeWidth = Math.max(1, Number.isFinite(width) ? width : 1);
+  const safeHeight = Math.max(1, Number.isFinite(height) ? height : 1);
+  const mercatorHalfSpan = Math.min(Math.PI / (safeWidth / safeHeight), VECTOR_GLOBE_MAX_MERCATOR_Y);
+  return (Math.atan(Math.sinh(mercatorHalfSpan)) * 180) / Math.PI;
+}
+
+function getPolarCaps(contentMaxLatitude: number) {
   const features: Array<Feature<Polygon, VectorProperties>> = [];
   const longitudeStep = 10;
   const poleLatitude = 89.999;
   for (const hemisphere of [1, -1]) {
-    const innerLatitude = VECTOR_GLOBE_CONTENT_MAX_LATITUDE * hemisphere;
+    const innerLatitude = contentMaxLatitude * hemisphere;
     const outerLatitude = poleLatitude * hemisphere;
     for (let longitude = -180; longitude < 180; longitude += longitudeStep) {
       const ring: Array<[number, number]> =
@@ -80,8 +88,13 @@ export function mapPointToVectorLngLat(
   height: number
 ): [number, number] {
   const [x, y] = point;
-  const longitude = (x / width) * 360 - 180;
-  const latitude = VECTOR_GLOBE_CONTENT_MAX_LATITUDE - (y / height) * VECTOR_GLOBE_CONTENT_MAX_LATITUDE * 2;
+  const safeWidth = Math.max(1, Number.isFinite(width) ? width : 1);
+  const safeHeight = Math.max(1, Number.isFinite(height) ? height : 1);
+  const longitude = (x / safeWidth) * 360 - 180;
+  const aspect = safeWidth / safeHeight;
+  const mercatorHalfSpan = Math.min(Math.PI / aspect, VECTOR_GLOBE_MAX_MERCATOR_Y);
+  const mercatorY = (1 - (2 * y) / safeHeight) * mercatorHalfSpan;
+  const latitude = (Math.atan(Math.sinh(mercatorY)) * 180) / Math.PI;
   return [longitude, latitude];
 }
 
@@ -312,6 +325,7 @@ export function buildVectorGlobeData(
   height: number,
   palette: VectorGlobePalette
 ): VectorGlobeData {
+  const contentMaxLatitude = getVectorGlobeContentMaxLatitude(width, height);
   const landFeatures: Array<Feature<Polygon, VectorProperties>> = [];
   const landmassFeatures: Array<Feature<Polygon, VectorProperties>> = [];
   const lakeFeatures: Array<Feature<Polygon, VectorProperties>> = [];
@@ -499,7 +513,7 @@ export function buildVectorGlobeData(
     }));
 
   return {
-    polarCaps: getPolarCaps(),
+    polarCaps: getPolarCaps(contentMaxLatitude),
     landmasses: collection(landmassFeatures),
     land: collection(landFeatures),
     lakes: collection(lakeFeatures),
