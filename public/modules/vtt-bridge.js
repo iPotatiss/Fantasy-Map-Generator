@@ -1,7 +1,8 @@
 /* VTT bridge — connects FMG to a parent "World Map Maker" frame.
  *
  * Protocol 2 binds the exact parent window, origin and random session before it accepts
- * Builder / Globe view commands. Map geometry and image data are never sent to the parent.
+ * Builder / Globe commands. Editable map snapshots are shared only after the exact
+ * parent window, origin and random session have been bound by the handshake.
  *
  * Plain ES5, no imports. Same-page export helpers are retained for FMG's own tooling,
  * but the message handler never invokes them or returns their data across origins.
@@ -15,6 +16,9 @@
   var client = null;
   var viewQueue = [];
   var viewBusy = false;
+  var generationRequest = null;
+  var suppressDirtyUntil = 0;
+  var dirtyTimer = null;
 
   // Array.from-style copy; covers TypedArrays and plain arrays, guards non-array-likes.
   function toArr(a) {
@@ -320,6 +324,172 @@
     protocolReply("FMG_ERROR", request, { code: code, message: message });
   }
 
+  function clampInteger(value, min, max, fallback) {
+    var parsed = Math.round(+value);
+    return isFinite(parsed) ? Math.max(min, Math.min(max, parsed)) : fallback;
+  }
+
+  function setControlValue(id, value) {
+    var control = document.getElementById(id);
+    if (!control || value == null) return false;
+    try {
+      control.value = String(value);
+      var output = document.getElementById(id.replace(/Input$/, "Output"));
+      if (output) {
+        output.value = String(value);
+        output.textContent = String(value);
+      }
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function applyGenerationSettings(settings, name) {
+    settings = settings && typeof settings === "object" ? settings : {};
+    var preset = typeof settings.preset === "string" ? settings.preset : "custom";
+    if (preset !== "custom" && window.GenerationDirector && typeof window.GenerationDirector.applyPreset === "function") {
+      window.GenerationDirector.applyPreset(preset);
+    }
+
+    setControlValue("waterCoverageInput", clampInteger(settings.waterCoverage, 5, 95, 71));
+    setControlValue("settlementDensityInput", settings.settlementDensity || "balanced");
+    setControlValue("capitalImportanceInput", settings.capitalImportance || "prominent");
+    setControlValue("statesNumber", clampInteger(settings.states, 1, 100, 18));
+    setControlValue("culturesInput", clampInteger(settings.cultures, 1, 50, 12));
+    setControlValue("religionsNumber", clampInteger(settings.religions, 0, 50, 6));
+    setControlValue("culturesSet", settings.cultureSet || "world");
+    setControlValue("mapName", typeof name === "string" && name.trim() ? name.trim().slice(0, 120) : "Untitled World");
+
+    var points = clampInteger(settings.points, 1, 13, 4);
+    if (typeof changeCellsDensity === "function") changeCellsDensity(points);
+    else setControlValue("pointsInput", points);
+
+    if (typeof lock === "function") {
+      ["waterCoverage", "settlementDensity", "capitalImportance", "statesNumber", "cultures", "religionsNumber", "culturesSet", "points", "mapName"].forEach(function (option) {
+        try { lock(option); } catch (e) {}
+      });
+    }
+  }
+
+  function handleCreateMap(ev, data) {
+    if (!isBoundRequest(ev, data) || !validRequestId(data.requestId)) return;
+    if (typeof regenerateMap !== "function") {
+      protocolError(data, "GENERATION_UNAVAILABLE", "Map generation is not available yet");
+      return;
+    }
+
+    applyGenerationSettings(data.settings, data.name);
+    generationRequest = data;
+    suppressDirtyUntil = Date.now() + 1000;
+    try {
+      regenerateMap({ seed: data.settings && data.settings.seed ? String(data.settings.seed) : undefined });
+    } catch (error) {
+      generationRequest = null;
+      protocolError(data, "GENERATION_FAILED", error && error.message ? error.message : "World generation failed");
+    }
+  }
+
+  function handleGetSnapshot(ev, data) {
+    if (!isBoundRequest(ev, data) || !validRequestId(data.requestId)) return;
+    if (!mapIsReady("world") || typeof prepareMapData !== "function") {
+      protocolError(data, "MAP_NOT_READY", "The map is not ready to save");
+      return;
+    }
+
+    var snapshot;
+    try {
+      snapshot = prepareMapData();
+    } catch (error) {
+      protocolError(data, "SAVE_FAILED", error && error.message ? error.message : "Could not prepare the map");
+      return;
+    }
+
+    if (!data.includePreview) {
+      protocolReply("FMG_SNAPSHOT", data, { snapshot: snapshot });
+      return;
+    }
+
+    buildImage("png", 0.35, function (previewDataUrl) {
+      protocolReply("FMG_SNAPSHOT", data, { snapshot: snapshot, previewDataUrl: previewDataUrl || null });
+    });
+  }
+
+  function handleLoadSnapshot(ev, data) {
+    if (!isBoundRequest(ev, data) || !validRequestId(data.requestId)) return;
+    if (typeof data.snapshot !== "string" || !data.snapshot.length || typeof uploadMap !== "function") {
+      protocolError(data, "INVALID_SNAPSHOT", "The saved map could not be restored");
+      return;
+    }
+
+    suppressDirtyUntil = Date.now() + 30000;
+    var finished = false;
+    var timeout = setTimeout(function () {
+      if (finished) return;
+      finished = true;
+      window.removeEventListener("map:generated", loaded);
+      protocolError(data, "LOAD_TIMEOUT", "The saved map took too long to restore");
+    }, 30000);
+    function loaded() {
+      if (finished) return;
+      finished = true;
+      clearTimeout(timeout);
+      suppressDirtyUntil = Date.now() + 1000;
+      window.removeEventListener("map:generated", loaded);
+      protocolReply("FMG_MAP_LOADED", data, {});
+    }
+    window.addEventListener("map:generated", loaded);
+    try {
+      uploadMap(new Blob([data.snapshot], { type: "text/plain" }));
+    } catch (error) {
+      finished = true;
+      clearTimeout(timeout);
+      window.removeEventListener("map:generated", loaded);
+      protocolError(data, "LOAD_FAILED", error && error.message ? error.message : "The saved map could not be restored");
+    }
+  }
+
+  function handleSetTitle(ev, data) {
+    if (!isBoundRequest(ev, data) || !validRequestId(data.requestId)) return;
+    var name = typeof data.name === "string" ? data.name.trim().slice(0, 120) : "";
+    if (!name || !setControlValue("mapName", name)) {
+      protocolError(data, "INVALID_TITLE", "The world needs a valid title");
+      return;
+    }
+    protocolReply("FMG_TITLE_CHANGED", data, { name: name });
+  }
+
+  function handleOpenTool(ev, data) {
+    if (!isBoundRequest(ev, data) || !validRequestId(data.requestId)) return;
+    var toolIds = { landmass: "drawLandmassTool", road: "drawRoadTool", river: "drawRiverTool" };
+    var button = document.getElementById(toolIds[data.tool]);
+    if (!button || typeof button.click !== "function") {
+      protocolError(data, "TOOL_UNAVAILABLE", "That drawing tool is not available");
+      return;
+    }
+    button.click();
+    protocolReply("FMG_TOOL_OPENED", data, { tool: data.tool });
+  }
+
+  function announceDirty() {
+    if (!client || Date.now() < suppressDirtyUntil || dirtyTimer) return;
+    dirtyTimer = setTimeout(function () {
+      dirtyTimer = null;
+      protocolReply("FMG_MAP_DIRTY", null, {});
+    }, 400);
+  }
+
+  function onMapGenerated() {
+    if (generationRequest) {
+      var request = generationRequest;
+      generationRequest = null;
+      suppressDirtyUntil = Date.now() + 1000;
+      protocolReply("FMG_MAP_CREATED", request, {});
+      return;
+    }
+    announceDirty();
+  }
+
   function handleConnect(ev, data) {
     if (!fromParent(ev) || data.protocol !== PROTOCOL_VERSION || !validSessionId(data.sessionId)) return;
 
@@ -330,9 +500,10 @@
       viewQueue = [];
     }
     client = { source: ev.source, origin: ev.origin, sessionId: data.sessionId };
+    document.documentElement.classList.add("vtt-embedded");
     protocolReply("FMG_CONNECTED", data, {
       view: currentView(),
-      capabilities: ["view.switch"]
+      capabilities: ["view.switch", "map.generate", "map.snapshot", "map.restore", "map.title", "tools.open"]
     });
   }
 
@@ -469,9 +640,19 @@
       handleSetView(ev, d);
       return;
     }
+    if (d.type === "FMG_CREATE_MAP") return handleCreateMap(ev, d);
+    if (d.type === "FMG_GET_SNAPSHOT") return handleGetSnapshot(ev, d);
+    if (d.type === "FMG_LOAD_SNAPSHOT") return handleLoadSnapshot(ev, d);
+    if (d.type === "FMG_SET_TITLE") return handleSetTitle(ev, d);
+    if (d.type === "FMG_OPEN_TOOL") return handleOpenTool(ev, d);
   }
 
   window.addEventListener("message", onRequest, false);
+  window.addEventListener("map:generated", onMapGenerated, false);
+  document.addEventListener("change", announceDirty, true);
+  document.addEventListener("pointerup", function (event) {
+    if (event.target && document.getElementById("map") && document.getElementById("map").contains(event.target)) announceDirty();
+  }, true);
 
   // Announce readiness so a parent frame knows the bridge is live.
   function announce() {
@@ -483,7 +664,7 @@
         {
           type: "FMG_READY",
           protocol: PROTOCOL_VERSION,
-          capabilities: ["view.switch"]
+          capabilities: ["view.switch", "map.generate", "map.snapshot", "map.restore", "map.title", "tools.open"]
         },
         "*"
       );

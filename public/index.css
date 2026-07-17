@@ -809,6 +809,14 @@ fieldset {
   cursor: default;
 }
 
+/* The VTT World Map Maker supplies its own organized settings and assets rails.
+   Standalone FMG keeps the original toolbar and every export option unchanged. */
+.vtt-embedded #optionsContainer,
+.vtt-embedded #drawingToolbox,
+.vtt-embedded #tourPromptButton {
+  display: none !important;
+}
+
 #cellInfo {
   user-select: text;
 }
