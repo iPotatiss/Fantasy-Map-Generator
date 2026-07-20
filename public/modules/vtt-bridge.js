@@ -634,7 +634,8 @@
       peakHeight: clampInteger(data.peakHeight, 25, 90, data.operation === "mountains" ? 75 : 48),
       coastFalloff: Math.max(0.1, Math.min(0.8, +data.coastFalloff || 0.35)),
       nations: clampInteger(data.nations, 0, 30, 0),
-      nationShares: Array.isArray(data.nationShares) ? data.nationShares.slice(0, 30).map(Number) : []
+      nationShares: Array.isArray(data.nationShares) ? data.nationShares.slice(0, 30).map(Number) : [],
+      claimedLandPercent: clampInteger(data.claimedLandPercent, 10, 100, 92)
     };
     // Opening the heightmap editor creates temporary packed cells even for a
     // genuinely blank project. Preserve the state captured before that happens;

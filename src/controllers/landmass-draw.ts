@@ -9,6 +9,7 @@ interface HeightmapEditorContext {
 export interface RegionDraftOptions extends LandmassOptions {
   nations?: number;
   nationShares?: number[];
+  claimedLandPercent?: number;
 }
 
 interface RegionDraftSummary {
@@ -161,6 +162,13 @@ function setGenerationTargets(options: RegionDraftOptions): void {
     const variety = document.getElementById("sizeVariety") as HTMLInputElement | null;
     if (variety) variety.value = String(Math.max(1, Math.min(10, 1 + range / 5)));
   }
+  const claimed = Math.max(10, Math.min(100, Number(options.claimedLandPercent) || 92));
+  const growth = document.getElementById("growthRate") as HTMLInputElement | null;
+  // State expansion is cost-limited. The old region recipe only chose the
+  // number of states, so a large hand-drawn continent could remain mostly
+  // neutral (rendered white in the political layer). Map the user's desired
+  // occupied share onto Azgaar's native expansion control.
+  if (growth && (options.nations || 0) > 0) growth.value = String(rn(0.35 + claimed * 0.0225, 2));
 }
 
 function applyDraft(options: RegionDraftOptions): { changed: number; landCells: number } {

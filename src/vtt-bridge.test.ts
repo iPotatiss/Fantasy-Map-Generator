@@ -300,7 +300,7 @@ describe("VTT bridge protocol", () => {
       nationShares: [20, 30, 50]
     });
     expect(bridge.applyRegionDraft).toHaveBeenCalledWith(
-      expect.objectContaining({ operation: "landmass", nations: 3, nationShares: [20, 30, 50] })
+      expect.objectContaining({ operation: "landmass", nations: 3, nationShares: [20, 30, 50], claimedLandPercent: 92 })
     );
     expect(bridge.renderLayersPreset).toHaveBeenCalledWith("political");
     expect(bridge.posted.at(-1)?.message).toMatchObject({
