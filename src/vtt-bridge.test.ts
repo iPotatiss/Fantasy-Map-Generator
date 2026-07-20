@@ -78,11 +78,14 @@ function loadBridge({ initialized = true }: { initialized?: boolean } = {}) {
   const changeCellsDensity = vi.fn();
   const applyRegionDraft = vi.fn(() => ({ changed: 120, landCells: 90 }));
   const cancelRegionDraft = vi.fn();
+  const startInfluenceDraw = vi.fn();
+  const cancelInfluenceDraw = vi.fn();
   const window = {
     parent,
     FMG_INITIALIZED: initialized,
     ThreeD: { setGlobeProjection, isGlobeReady },
     LandmassDraw: { applyDraft: applyRegionDraft, cancelDraft: cancelRegionDraft },
+    DemographicInfluenceDraw: { start: startInfluenceDraw, cancel: cancelInfluenceDraw },
     addEventListener: vi.fn((type: string, listener: (event: Record<string, unknown>) => void) => {
       listeners[type] = listener;
     }),
@@ -169,6 +172,8 @@ function loadBridge({ initialized = true }: { initialized?: boolean } = {}) {
     temperatureScale,
     applyRegionDraft,
     cancelRegionDraft,
+    startInfluenceDraw,
+    cancelInfluenceDraw,
     markInitialized: () => {
       window.FMG_INITIALIZED = true;
       listeners["fmg:initialized"]?.({});
@@ -205,7 +210,8 @@ describe("VTT bridge protocol", () => {
             "map.title",
             "tools.open",
             "region.compose",
-            "layers.visibility"
+            "layers.visibility",
+            "world.inspect"
           ]
         },
         origin: "*"
@@ -244,7 +250,8 @@ describe("VTT bridge protocol", () => {
             "map.title",
             "tools.open",
             "region.compose",
-            "layers.visibility"
+            "layers.visibility",
+            "world.inspect"
           ]
         },
         origin: "https://app.example"
@@ -310,6 +317,24 @@ describe("VTT bridge protocol", () => {
       operation: "mountains"
     });
     expect(bridge.renderLayersPreset).not.toHaveBeenCalled();
+  });
+
+  it("opens the demographic influence pen and forwards its polygon", () => {
+    const bridge = loadBridge();
+    const sessionId = "session-1234567890abcdef";
+    bridge.send({ type: "FMG_CONNECT", protocol: 2, sessionId });
+    bridge.send({ type: "FMG_OPEN_INFLUENCE_TOOL", protocol: 2, sessionId, requestId: "influence-open" });
+    expect(bridge.startInfluenceDraw).toHaveBeenCalledOnce();
+
+    bridge.emit("map:influence-draft", { detail: { id: "faith-belt", points: [[1, 2], [5, 2], [3, 8]] } });
+    expect(bridge.posted.at(-1)?.message).toMatchObject({
+      type: "FMG_INFLUENCE_DRAFT",
+      draftId: "faith-belt",
+      points: [[1, 2], [5, 2], [3, 8]]
+    });
+
+    bridge.send({ type: "FMG_CANCEL_INFLUENCE_TOOL", protocol: 2, sessionId, requestId: "influence-cancel" });
+    expect(bridge.cancelInfluenceDraw).toHaveBeenCalledOnce();
   });
 
   it("toggles noisy symbol layers independently", () => {

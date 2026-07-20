@@ -20,6 +20,7 @@
   var generationTimer = null;
   var suppressDirtyUntil = 0;
   var dirtyTimer = null;
+  var inspectionMode = false;
 
   // Array.from-style copy; covers TypedArrays and plain arrays, guards non-array-likes.
   function toArr(a) {
@@ -710,8 +711,103 @@
     protocolReply("FMG_CONNECTED", data, {
       view: currentView(),
       layers: getLayerVisibility(),
-      capabilities: ["view.switch", "map.generate", "map.snapshot", "map.restore", "map.title", "tools.open", "region.compose", "layers.visibility"]
+      capabilities: ["view.switch", "map.generate", "map.snapshot", "map.restore", "map.title", "tools.open", "region.compose", "layers.visibility", "world.inspect"]
     });
+  }
+
+  function handleInspectionMode(ev, data) {
+    if (!isBoundRequest(ev, data) || !validRequestId(data.requestId)) return;
+    inspectionMode = data.enabled === true;
+    protocolReply("FMG_INSPECTION_MODE_CHANGED", data, { enabled: inspectionMode });
+  }
+
+  function handleOpenInfluenceTool(ev, data) {
+    if (!isBoundRequest(ev, data) || !validRequestId(data.requestId)) return;
+    if (!window.DemographicInfluenceDraw) return protocolError(data, "INFLUENCE_TOOL_UNAVAILABLE", "The influence pen is not available");
+    window.DemographicInfluenceDraw.start();
+    protocolReply("FMG_INFLUENCE_TOOL_OPENED", data, {});
+  }
+
+  function handleCancelInfluenceTool(ev, data) {
+    if (!isBoundRequest(ev, data) || !validRequestId(data.requestId)) return;
+    if (window.DemographicInfluenceDraw) window.DemographicInfluenceDraw.cancel();
+    protocolReply("FMG_INFLUENCE_CANCELLED", data, {});
+  }
+
+  function handleRenderInfluences(ev, data) {
+    if (!isBoundRequest(ev, data) || !validRequestId(data.requestId)) return;
+    if (!window.DemographicInfluenceDraw) return protocolError(data, "INFLUENCE_TOOL_UNAVAILABLE", "Influence regions cannot be displayed");
+    var regions = Array.isArray(data.regions) ? data.regions.slice(0, 200) : [];
+    window.DemographicInfluenceDraw.setRegions(regions);
+    protocolReply("FMG_INFLUENCES_RENDERED", data, { count: regions.length });
+  }
+
+  function onInfluenceDraft(event) {
+    var detail = event && event.detail;
+    if (!client || !detail || !Array.isArray(detail.points)) return;
+    protocolReply("FMG_INFLUENCE_DRAFT", null, { draftId: detail.id, points: detail.points });
+  }
+
+  function mapPointFromEvent(event) {
+    var svg = document.getElementById("map");
+    var viewbox = document.getElementById("viewbox");
+    if (!svg || !viewbox || typeof svg.createSVGPoint !== "function" || !viewbox.getScreenCTM) return null;
+    var matrix = viewbox.getScreenCTM();
+    if (!matrix || typeof matrix.inverse !== "function") return null;
+    var point = svg.createSVGPoint();
+    point.x = event.clientX;
+    point.y = event.clientY;
+    return point.matrixTransform(matrix.inverse());
+  }
+
+  function selectedStatePayload(stateId) {
+    var state = pack && pack.states ? pack.states[stateId] : null;
+    if (!state || state.removed) return null;
+    return {
+      stateId: stateId,
+      stateName: state.fullName || state.name || "Unnamed nation",
+      generatedNationPopulation: Math.max(1, n(state.rural) + n(state.urban)),
+      mapWidth: n(graphWidth),
+      mapHeight: n(graphHeight)
+    };
+  }
+
+  function onMapInspectionClick(event) {
+    if (!inspectionMode || !client || typeof customization !== "undefined" && customization) return;
+    var map = document.getElementById("map");
+    if (!map || !event.target || !map.contains(event.target)) return;
+
+    var burgElement = event.target.closest && event.target.closest("#burgIcons [data-id], #burgLabels [data-id], #anchors [data-id]");
+    if (burgElement && typeof pack !== "undefined" && pack && pack.burgs) {
+      var burgId = +burgElement.dataset.id;
+      var burg = pack.burgs[burgId];
+      if (burg && !burg.removed) {
+        event.preventDefault();
+        event.stopPropagation();
+        protocolReply("FMG_MAP_SELECTION", null, Object.assign({
+          kind: "settlement",
+          burgId: burgId,
+          name: burg.name || "Unnamed settlement",
+          x: n(burg.x),
+          y: n(burg.y),
+          generatedPopulation: Math.max(0, n(burg.population)),
+          capital: !!burg.capital,
+          port: !!burg.port
+        }, selectedStatePayload(+burg.state) || { stateId: 0, stateName: "Unclaimed land", generatedNationPopulation: 1, mapWidth: n(graphWidth), mapHeight: n(graphHeight) }));
+        return;
+      }
+    }
+
+    if (typeof findCell !== "function" || typeof pack === "undefined" || !pack || !pack.cells) return;
+    var point = mapPointFromEvent(event);
+    if (!point) return;
+    var cell = findCell(point.x, point.y);
+    var stateId = pack.cells.state ? +pack.cells.state[cell] : 0;
+    var statePayload = selectedStatePayload(stateId);
+    if (!statePayload) return;
+    event.preventDefault();
+    event.stopPropagation();
+    protocolReply("FMG_MAP_SELECTION", null, Object.assign({ kind: "nation", x: point.x, y: point.y }, statePayload));
   }
 
   function viewIsReady(view) {
@@ -856,13 +952,19 @@
     if (d.type === "FMG_CANCEL_REGION") return handleCancelRegion(ev, d);
     if (d.type === "FMG_SET_LAYER") return handleSetLayer(ev, d);
     if (d.type === "FMG_SET_LAYER_PRESET") return handleSetLayerPreset(ev, d);
+    if (d.type === "FMG_SET_INSPECTION_MODE") return handleInspectionMode(ev, d);
+    if (d.type === "FMG_OPEN_INFLUENCE_TOOL") return handleOpenInfluenceTool(ev, d);
+    if (d.type === "FMG_CANCEL_INFLUENCE_TOOL") return handleCancelInfluenceTool(ev, d);
+    if (d.type === "FMG_RENDER_INFLUENCES") return handleRenderInfluences(ev, d);
   }
 
   window.addEventListener("message", onRequest, false);
   window.addEventListener("map:region-draft", onRegionDraft, false);
+  window.addEventListener("map:influence-draft", onInfluenceDraft, false);
   window.addEventListener("map:generated", onMapGenerated, false);
   window.addEventListener("map:generation-error", onMapGenerationError, false);
   document.addEventListener("change", announceDirty, true);
+  document.addEventListener("click", onMapInspectionClick, true);
   document.addEventListener("pointerup", function (event) {
     if (event.target && document.getElementById("map") && document.getElementById("map").contains(event.target)) announceDirty();
   }, true);
@@ -877,7 +979,7 @@
         {
           type: "FMG_READY",
           protocol: PROTOCOL_VERSION,
-          capabilities: ["view.switch", "map.generate", "map.snapshot", "map.restore", "map.title", "tools.open", "region.compose", "layers.visibility"]
+          capabilities: ["view.switch", "map.generate", "map.snapshot", "map.restore", "map.title", "tools.open", "region.compose", "layers.visibility", "world.inspect"]
         },
         "*"
       );

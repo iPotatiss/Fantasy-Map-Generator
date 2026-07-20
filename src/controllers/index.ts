@@ -2,6 +2,7 @@ import "./coastline-editor";
 import "./coastline-terrain";
 import "./compare-prices";
 import "./drawing-toolbox";
+import "./demographic-influence-draw";
 import "./elevation-profile";
 import "./landmass-draw";
 import "./market-deals-overview";
