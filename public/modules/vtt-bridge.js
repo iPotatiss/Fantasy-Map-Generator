@@ -348,6 +348,17 @@
     announceDirty();
   }
 
+  function handleSetLayerPreset(ev, data) {
+    if (!isBoundRequest(ev, data) || !validRequestId(data.requestId)) return;
+    if (typeof renderLayersPreset !== "function") {
+      protocolError(data, "LAYER_PRESET_UNAVAILABLE", "The clean map presentation is not available yet");
+      return;
+    }
+    renderLayersPreset("political");
+    protocolReply("FMG_LAYERS_CHANGED", data, { layers: getLayerVisibility() });
+    announceDirty();
+  }
+
   function protocolReply(type, request, extra) {
     if (!client) return;
     if (request && request.sessionId && request.sessionId !== client.sessionId) return;
@@ -844,6 +855,7 @@
     if (d.type === "FMG_APPLY_REGION") return handleApplyRegion(ev, d);
     if (d.type === "FMG_CANCEL_REGION") return handleCancelRegion(ev, d);
     if (d.type === "FMG_SET_LAYER") return handleSetLayer(ev, d);
+    if (d.type === "FMG_SET_LAYER_PRESET") return handleSetLayerPreset(ev, d);
   }
 
   window.addEventListener("message", onRequest, false);

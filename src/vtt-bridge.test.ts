@@ -330,6 +330,16 @@ describe("VTT bridge protocol", () => {
       requestId: "layer-1",
       layers: { emblems: true }
     });
+
+    bridge.renderLayersPreset.mockClear();
+    bridge.send({
+      type: "FMG_SET_LAYER_PRESET",
+      protocol: 2,
+      sessionId,
+      requestId: "preset-1",
+      preset: "political"
+    });
+    expect(bridge.renderLayersPreset).toHaveBeenCalledWith("political");
   });
 
   it("waits for generated map data before entering Globe", () => {
