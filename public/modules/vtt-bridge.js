@@ -641,6 +641,7 @@
     // checking pack here alone mistakes the technical editor grid for a real map.
     var wasBlank = window.VTT_REGION_STARTED_BLANK === true || typeof pack === "undefined" || !pack || !pack.cells || !pack.cells.i || !pack.cells.i.length;
     try {
+      if (wasBlank) applyBlankRegionSettings(data.settings || {});
       var result = window.LandmassDraw.applyDraft(options);
       // A blank embedded canvas exposes technical layers so the user has a
       // surface to draw on. Once the first region is generated, replace that
@@ -657,6 +658,21 @@
     } catch (error) {
       protocolError(data, "REGION_GENERATION_FAILED", error && error.message ? error.message : "The region could not be generated");
     }
+  }
+
+  function applyBlankRegionSettings(settings) {
+    var automaticPosition = settings.automaticWorldPosition !== false;
+    setControlValue("mapSizeInput", automaticPosition ? 50 : clampInteger(settings.mapSize, 1, 100, 50));
+    setControlValue("latitudeInput", automaticPosition ? 50 : clampInteger(settings.latitude, 0, 100, 50));
+    setControlValue("longitudeInput", automaticPosition ? 50 : clampInteger(settings.longitude, 0, 100, 50));
+    setControlValue("temperatureEquatorInput", clampInteger(settings.temperatureEquator, -30, 50, 25));
+    setControlValue("temperatureNorthPoleInput", clampInteger(settings.temperatureNorthPole, -50, 30, -25));
+    setControlValue("temperatureSouthPoleInput", clampInteger(settings.temperatureSouthPole, -50, 30, -15));
+    setControlValue("precInput", clampInteger(settings.precipitation, 0, 500, 100));
+    setControlValue("culturesInput", clampInteger(settings.cultures, 1, 100, 12));
+    setControlValue("religionsNumber", clampInteger(settings.religions, 0, 50, 6));
+    setControlValue("manorsInput", clampInteger(settings.settlementCount, 0, 10000, 1000));
+    if (typeof calculateMapCoordinates === "function") calculateMapCoordinates();
   }
 
   function handleCancelRegion(ev, data) {

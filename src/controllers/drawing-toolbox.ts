@@ -56,7 +56,7 @@ const TOOLS: ToolDef[] = [
     run: () => {
       const isBlank = !pack?.cells?.i?.length;
       window.VTT_REGION_STARTED_BLANK = isBlank;
-      editHeightmap({ mode: isBlank ? "erase" : "risk", tool: "landmass" });
+      (window as any).LandmassDraw?.toggle();
     }
   }
 ];

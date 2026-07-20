@@ -19,6 +19,7 @@ interface RegionDraftSummary {
 }
 
 declare global {
+  var editHeightmap: (options?: { mode?: string; tool?: string }) => void;
   var heightmapEditorContext: HeightmapEditorContext | undefined;
   interface Window {
     LandmassDraw: {
@@ -62,8 +63,8 @@ function toggle(): void {
 }
 
 function enter(): void {
-  if (customization !== 1) {
-    tip("Open the heightmap editor to draw a freeform region", false, "error");
+  if (customization !== 0 && customization !== 1) {
+    tip("Finish the current map tool before drawing a freeform region", false, "error");
     return;
   }
   active = true;
@@ -164,6 +165,12 @@ function setGenerationTargets(options: RegionDraftOptions): void {
 
 function applyDraft(options: RegionDraftOptions): { changed: number; landCells: number } {
   if (!draftPolygon) throw new Error("Draw a freeform region first");
+  if (customization !== 1) {
+    const mode = pack?.cells?.i?.length ? "risk" : "erase";
+    editHeightmap({ mode, tool: "landmassApply" });
+  }
+  if (customization !== 1 || !heightmapEditorContext)
+    throw new Error("The terrain editor could not prepare this region");
   setGenerationTargets(options);
   const result = generateLandmassInPolygon(draftPolygon, options);
   if (!result)
@@ -186,6 +193,10 @@ function cancelDraft(): void {
   clearDraft();
   exit(false);
   window.dispatchEvent(new CustomEvent("map:region-cancelled"));
+  if (customization !== 1) {
+    restoreDefaultEvents();
+    return;
+  }
   const hasGeneratedMap = Boolean(pack?.cells?.i?.length);
   if (hasGeneratedMap) {
     (document.getElementById("finalizeHeightmap") as HTMLButtonElement | null)?.click();
