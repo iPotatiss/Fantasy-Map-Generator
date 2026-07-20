@@ -520,31 +520,11 @@ function updateHud() {
 
 function createHud() {
   if (!vectorContainer || !vectorMap) return;
-  const hud = document.createElement("div");
-  hud.className = "fmg-vector-globe__hud";
-
-  const builder = document.createElement("button");
-  builder.type = "button";
-  builder.textContent = "← Builder";
-  builder.title = "Return to the editable flat map";
-  builder.addEventListener("click", () => document.getElementById("viewStandard")?.click());
-
-  const world = document.createElement("button");
-  world.type = "button";
-  world.textContent = "World";
-  world.title = "Return to the full globe";
-  world.addEventListener("click", () => vectorMap?.easeTo({ center: [0, 0], zoom: 1.75, duration: 650 }));
-
-  const stage = document.createElement("span");
-  stage.className = "fmg-vector-globe__stage";
-  stage.textContent = vectorStage;
-  hud.append(builder, world, stage);
-
   const hint = document.createElement("div");
   hint.className = "fmg-vector-globe__hint";
   hint.textContent = "Zoom closer over a settlement to enter its bird’s-eye map";
   hint.dataset.visible = "false";
-  vectorContainer.append(hud, hint);
+  vectorContainer.append(hint);
   updateHud();
 }
 
