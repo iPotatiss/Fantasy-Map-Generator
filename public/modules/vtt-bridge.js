@@ -504,6 +504,7 @@
       return;
     }
     try {
+      window.VTT_REGION_STARTED_BLANK = false;
       applyGenerationSettings(data.settings, data.name);
       // Blank VTT startup intentionally skips FMG's normal generation path, whose
       // preset step turns the raw all-layers-on HTML state into a readable map.
@@ -635,13 +636,23 @@
       nations: clampInteger(data.nations, 0, 30, 0),
       nationShares: Array.isArray(data.nationShares) ? data.nationShares.slice(0, 30).map(Number) : []
     };
-    var wasBlank = typeof pack === "undefined" || !pack || !pack.cells || !pack.cells.i || !pack.cells.i.length;
+    // Opening the heightmap editor creates temporary packed cells even for a
+    // genuinely blank project. Preserve the state captured before that happens;
+    // checking pack here alone mistakes the technical editor grid for a real map.
+    var wasBlank = window.VTT_REGION_STARTED_BLANK === true || typeof pack === "undefined" || !pack || !pack.cells || !pack.cells.i || !pack.cells.i.length;
     try {
       var result = window.LandmassDraw.applyDraft(options);
       // A blank embedded canvas exposes technical layers so the user has a
       // surface to draw on. Once the first region is generated, replace that
       // editing stack with Azgaar's canonical readable political presentation.
-      if (wasBlank && typeof renderLayersPreset === "function") renderLayersPreset("political");
+      if (wasBlank && typeof renderLayersPreset === "function") {
+        renderLayersPreset("political");
+        // The erased-data finalizer restores the layer set that was visible in
+        // the blank editor. Re-assert the canonical preset after that synchronous
+        // restoration so precipitation circles, cells and diagnostic fills cannot leak.
+        setTimeout(function () { renderLayersPreset("political"); }, 0);
+      }
+      window.VTT_REGION_STARTED_BLANK = false;
       protocolReply("FMG_REGION_APPLIED", data, Object.assign({}, result, { layers: getLayerVisibility() }));
     } catch (error) {
       protocolError(data, "REGION_GENERATION_FAILED", error && error.message ? error.message : "The region could not be generated");

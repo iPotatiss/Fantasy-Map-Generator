@@ -18,6 +18,7 @@ declare global {
   var editHeightmap: (options?: { mode?: string; tool?: string }) => void;
   interface Window {
     DrawingToolbox: { toggle: () => void };
+    VTT_REGION_STARTED_BLANK?: boolean;
   }
 }
 
@@ -52,7 +53,11 @@ const TOOLS: ToolDef[] = [
     icon: "🏝️",
     label: "Freeform Region",
     tip: "Draw a freeform outline, then configure what should be generated inside it.",
-    run: () => editHeightmap({ mode: pack?.cells?.i?.length ? "risk" : "erase", tool: "landmass" })
+    run: () => {
+      const isBlank = !pack?.cells?.i?.length;
+      window.VTT_REGION_STARTED_BLANK = isBlank;
+      editHeightmap({ mode: isBlank ? "erase" : "risk", tool: "landmass" });
+    }
   }
 ];
 

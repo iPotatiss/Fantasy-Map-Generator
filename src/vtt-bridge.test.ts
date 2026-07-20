@@ -174,6 +174,9 @@ function loadBridge({ initialized = true }: { initialized?: boolean } = {}) {
     cancelRegionDraft,
     startInfluenceDraw,
     cancelInfluenceDraw,
+    setRegionStartedBlank: (value: boolean) => {
+      window.VTT_REGION_STARTED_BLANK = value;
+    },
     markInitialized: () => {
       window.FMG_INITIALIZED = true;
       listeners["fmg:initialized"]?.({});
@@ -317,6 +320,22 @@ describe("VTT bridge protocol", () => {
       operation: "mountains"
     });
     expect(bridge.renderLayersPreset).not.toHaveBeenCalled();
+  });
+
+  it("cleans technical layers when the height editor temporarily packed a blank project", () => {
+    const bridge = loadBridge();
+    const sessionId = "session-1234567890abcdef";
+    bridge.send({ type: "FMG_CONNECT", protocol: 2, sessionId });
+    bridge.pack.cells.i = [0];
+    bridge.setRegionStartedBlank(true);
+    bridge.send({
+      type: "FMG_APPLY_REGION",
+      protocol: 2,
+      sessionId,
+      requestId: "blank-region",
+      operation: "landmass"
+    });
+    expect(bridge.renderLayersPreset).toHaveBeenCalledWith("political");
   });
 
   it("opens the demographic influence pen and forwards its polygon", () => {
