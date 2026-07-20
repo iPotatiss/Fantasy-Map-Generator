@@ -551,6 +551,13 @@
       return;
     }
     button.click();
+    if (data.tool === "landmass") {
+      var pen = document.getElementById("drawLandmass");
+      if (!pen || !pen.classList.contains("pressed")) {
+        protocolError(data, "TOOL_START_FAILED", "The freeform pen could not take control of the map. Reload the Map Maker and try again.");
+        return;
+      }
+    }
     protocolReply("FMG_TOOL_OPENED", data, { tool: data.tool });
   }
 
