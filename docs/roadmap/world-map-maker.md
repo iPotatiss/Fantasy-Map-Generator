@@ -25,3 +25,17 @@ Procedural generation is one starting point, not the only workflow. The World Ma
 - Import a background or custom user assets, and export PNG / WebP while preserving the full editable project.
 - Drawing tools and procedural tools must work together: generate a world, paint over it, regenerate a selected region, or begin entirely by hand.
 - Battle, regional, city and world-map workspaces should share the same understandable creative language without forcing identical tools at every scale.
+
+### Freeform region recipe — shipped first slice (2026-07-20)
+
+- Blank embedded projects initialize an empty editable terrain grid.
+- Freeform Region retains the user's outline and waits for an explicit recipe;
+  pointer release no longer generates immediately.
+- The VTT recipe bridge supports land, hills, mountains, lakes, terrain/coast
+  character, state count, and target state-area shares.
+- Re-drawing over generated terrain performs a regional terrain operation while
+  risk-mode restoration keeps unrelated geography and data intact.
+- Target state shares bias organic state expansion and are deliberately
+  approximate rather than cutting visibly artificial percentage wedges.
+- Still planned: biome/climate/hydrology recipes, named states before generation,
+  editable retained recipe layers, and localized settlement controls.

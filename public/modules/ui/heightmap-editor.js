@@ -388,8 +388,9 @@ function editHeightmap(options) {
 
   // Exit customization mode
   function finalizeHeightmap() {
-    if (viewbox.select("#heights").selectAll("*").size() < 200)
-      return tip("Insufficient land area. There should be at least 200 land cells!", null, "error");
+    const minimumLandCells = document.documentElement.classList.contains("vtt-embedded") ? 20 : 200;
+    if (viewbox.select("#heights").selectAll("*").size() < minimumLandCells)
+      return tip(`Insufficient land area. There should be at least ${minimumLandCells} land cells!`, null, "error");
     if (ensureEl("imageConverter").offsetParent)
       return tip("Please exit the Image Conversion mode first", null, "error");
 

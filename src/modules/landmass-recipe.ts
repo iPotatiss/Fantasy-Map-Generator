@@ -7,6 +7,7 @@ type Point = [number, number];
 export interface LandmassOptions {
   peakHeight: number; // height of the main peak, [25, 90] on the 0-100 scale
   coastFalloff: number; // coastal falloff width as a fraction of the shape's effective radius, [0.1, 0.8]
+  operation?: "landmass" | "hills" | "mountains" | "lake";
 }
 
 export interface LandmassResult {
@@ -110,7 +111,22 @@ export function generateLandmassInPolygon(polygon: Point[], options: LandmassOpt
 
   const heights = grid.cells.h as Uint8Array;
   const original = Uint8Array.from(heights);
-  const allowed = new Set(inside);
+  const operation = options.operation ?? "landmass";
+
+  if (operation === "lake") {
+    const changed: number[] = [];
+    for (const i of inside) {
+      if (original[i] < 20) continue;
+      heights[i] = 12;
+      changed.push(i);
+    }
+    return changed.length ? { changed, landCells: 0 } : null;
+  }
+
+  const terrainOnly = operation === "hills" || operation === "mountains";
+  const eligible = terrainOnly ? inside.filter(i => original[i] >= 20) : inside;
+  if (eligible.length < MIN_CELLS) return null;
+  const allowed = new Set(eligible);
 
   const area = Math.abs(polygonArea(polygon));
   const radius = Math.sqrt(area / Math.PI);
@@ -119,7 +135,7 @@ export function generateLandmassInPolygon(polygon: Point[], options: LandmassOpt
   for (const i of inside) distances.set(i, distanceToPolygonEdge(grid.points[i], polygon));
 
   // base fill guarantees a contiguous landmass under the procedural detail
-  for (const i of inside) heights[i] = Math.max(heights[i], BASE_HEIGHT);
+  if (!terrainOnly) for (const i of eligible) heights[i] = Math.max(heights[i], BASE_HEIGHT);
 
   HeightmapGenerator.setGraph(grid);
   HeightmapGenerator.setAllowedCells(allowed);
@@ -133,9 +149,9 @@ export function generateLandmassInPolygon(polygon: Point[], options: LandmassOpt
   HeightmapGenerator.addHill("1", String(peak), "", "", poleCell);
 
   // secondary hills seeded on interior cells
-  const interior = inside.filter(i => distances.get(i)! > falloff * 0.4);
-  const seedPool = interior.length ? interior : inside;
-  const hillCount = minmax(Math.round(inside.length / 100), 1, 12);
+  const interior = eligible.filter(i => distances.get(i)! > falloff * 0.4);
+  const seedPool = interior.length ? interior : eligible;
+  const hillCount = minmax(Math.round(eligible.length / 100), 1, 12);
   const hillHeight = `${Math.round(peak * 0.3)}-${Math.round(peak * 0.6)}`;
   for (let n = 0; n < hillCount; n++) {
     HeightmapGenerator.addHill("1", hillHeight, "", "", seedPool[rand(0, seedPool.length - 1)]);
@@ -154,10 +170,10 @@ export function generateLandmassInPolygon(polygon: Point[], options: LandmassOpt
   // shape to the drawn outline; never lower pre-existing terrain
   const changed: number[] = [];
   let landCells = 0;
-  for (const i of inside) {
+  for (const i of eligible) {
     const s = smoothstep01(distances.get(i)! / falloff);
-    let shaped = SHELF_HEIGHT + (generated[i] - SHELF_HEIGHT) * s;
-    if (s > 0.5) shaped = Math.max(shaped, BASE_HEIGHT);
+    let shaped = terrainOnly ? generated[i] : SHELF_HEIGHT + (generated[i] - SHELF_HEIGHT) * s;
+    if (!terrainOnly && s > 0.5) shaped = Math.max(shaped, BASE_HEIGHT);
     const value = lim(Math.max(original[i], rn(shaped)));
     heights[i] = value;
     if (value !== original[i]) {

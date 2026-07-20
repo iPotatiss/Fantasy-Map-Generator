@@ -554,6 +554,49 @@
     protocolReply("FMG_TOOL_OPENED", data, { tool: data.tool });
   }
 
+  function handleApplyRegion(ev, data) {
+    if (!isBoundRequest(ev, data) || !validRequestId(data.requestId)) return;
+    if (!window.LandmassDraw || typeof window.LandmassDraw.applyDraft !== "function") {
+      protocolError(data, "REGION_TOOL_UNAVAILABLE", "The freeform region tool is not available");
+      return;
+    }
+    var allowed = ["landmass", "hills", "mountains", "lake"];
+    if (allowed.indexOf(data.operation) === -1) {
+      protocolError(data, "INVALID_REGION_OPERATION", "Choose land, hills, mountains, or a lake");
+      return;
+    }
+    var options = {
+      operation: data.operation,
+      peakHeight: clampInteger(data.peakHeight, 25, 90, data.operation === "mountains" ? 75 : 48),
+      coastFalloff: Math.max(0.1, Math.min(0.8, +data.coastFalloff || 0.35)),
+      nations: clampInteger(data.nations, 0, 30, 0),
+      nationShares: Array.isArray(data.nationShares) ? data.nationShares.slice(0, 30).map(Number) : []
+    };
+    try {
+      var result = window.LandmassDraw.applyDraft(options);
+      protocolReply("FMG_REGION_APPLIED", data, result);
+    } catch (error) {
+      protocolError(data, "REGION_GENERATION_FAILED", error && error.message ? error.message : "The region could not be generated");
+    }
+  }
+
+  function handleCancelRegion(ev, data) {
+    if (!isBoundRequest(ev, data) || !validRequestId(data.requestId)) return;
+    if (window.LandmassDraw && typeof window.LandmassDraw.cancelDraft === "function") window.LandmassDraw.cancelDraft();
+    protocolReply("FMG_REGION_CANCELLED", data, {});
+  }
+
+  function onRegionDraft(event) {
+    var detail = event && event.detail;
+    if (!client || !detail) return;
+    protocolReply("FMG_REGION_DRAFT", null, {
+      draftId: detail.id,
+      pointCount: detail.pointCount,
+      cellCount: detail.cellCount,
+      existingLandPercent: detail.existingLandPercent
+    });
+  }
+
   function announceDirty() {
     if (!client || Date.now() < suppressDirtyUntil || dirtyTimer) return;
     dirtyTimer = setTimeout(function () {
@@ -599,7 +642,7 @@
     document.documentElement.classList.add("vtt-embedded");
     protocolReply("FMG_CONNECTED", data, {
       view: currentView(),
-      capabilities: ["view.switch", "map.generate", "map.snapshot", "map.restore", "map.title", "tools.open"]
+      capabilities: ["view.switch", "map.generate", "map.snapshot", "map.restore", "map.title", "tools.open", "region.compose"]
     });
   }
 
@@ -741,9 +784,12 @@
     if (d.type === "FMG_LOAD_SNAPSHOT") return handleLoadSnapshot(ev, d);
     if (d.type === "FMG_SET_TITLE") return handleSetTitle(ev, d);
     if (d.type === "FMG_OPEN_TOOL") return handleOpenTool(ev, d);
+    if (d.type === "FMG_APPLY_REGION") return handleApplyRegion(ev, d);
+    if (d.type === "FMG_CANCEL_REGION") return handleCancelRegion(ev, d);
   }
 
   window.addEventListener("message", onRequest, false);
+  window.addEventListener("map:region-draft", onRegionDraft, false);
   window.addEventListener("map:generated", onMapGenerated, false);
   window.addEventListener("map:generation-error", onMapGenerationError, false);
   document.addEventListener("change", announceDirty, true);
@@ -761,7 +807,7 @@
         {
           type: "FMG_READY",
           protocol: PROTOCOL_VERSION,
-          capabilities: ["view.switch", "map.generate", "map.snapshot", "map.restore", "map.title", "tools.open"]
+          capabilities: ["view.switch", "map.generate", "map.snapshot", "map.restore", "map.title", "tools.open", "region.compose"]
         },
         "*"
       );

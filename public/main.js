@@ -333,6 +333,10 @@ async function checkLoadParameters() {
   // random world behind its setup screen.
   if (params.get("vttBlank") === "1") {
     await applyStyleOnLoad();
+    applyGraphSize();
+    grid = generateGrid();
+    grid.cells.h = new Uint8Array(grid.cells.i.length).fill(5);
+    pack = {};
     return;
   }
 

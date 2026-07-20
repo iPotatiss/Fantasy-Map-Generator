@@ -50,9 +50,9 @@ const TOOLS: ToolDef[] = [
   {
     id: "drawLandmassTool",
     icon: "🏝️",
-    label: "Landmass",
-    tip: "Draw a landmass: opens the heightmap editor (Risk mode keeps your world) and starts the shape tool. Draw a closed shape to grow land inside it.",
-    run: () => editHeightmap({ mode: "risk", tool: "landmass" })
+    label: "Freeform Region",
+    tip: "Draw a freeform outline, then configure what should be generated inside it.",
+    run: () => editHeightmap({ mode: pack?.cells?.i?.length ? "risk" : "erase", tool: "landmass" })
   }
 ];
 

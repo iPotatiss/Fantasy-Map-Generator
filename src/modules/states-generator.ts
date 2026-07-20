@@ -77,11 +77,19 @@ class StatesModule {
     const states: State[] = [{ i: 0, name: "Neutrals", salesTax: 0, pollTax: 0, treasury: 0 } as State];
     const each5th = each(5);
     const sizeVariety = (ensureEl("sizeVariety") as HTMLInputElement).valueAsNumber;
+    const requestedShares = window.VTT_REGION_STATE_SHARES;
+    const shareTotal = requestedShares?.reduce((sum, value) => sum + value, 0) || 0;
+    const normalizedShares = shareTotal ? requestedShares!.map(value => value / shareTotal) : null;
+    let stateIndex = 0;
 
     pack.burgs.forEach(burg => {
       if (!burg.i || !burg.capital) return;
 
-      const expansionism = rn(Math.random() * sizeVariety + 1, 1);
+      const baseExpansionism = Math.random() * sizeVariety + 1;
+      const targetShare = normalizedShares?.[stateIndex];
+      const shareMultiplier = targetShare == null ? 1 : Math.max(0.25, targetShare * normalizedShares!.length);
+      const expansionism = rn(baseExpansionism * shareMultiplier, 1);
+      stateIndex++;
       const basename = burg.name!.length < 9 && each5th(burg.cell) ? burg.name! : Names.getCultureShort(burg.culture!);
       const name = Names.getState(basename, burg.culture!);
       const type = pack.cultures[burg.culture!].type;
@@ -101,6 +109,8 @@ class StatesModule {
         treasury: 0
       });
     });
+
+    window.VTT_REGION_STATE_SHARES = undefined;
 
     return states;
   }

@@ -69,10 +69,13 @@ function loadBridge({ initialized = true }: { initialized?: boolean } = {}) {
   const unlock = vi.fn();
   const options = {};
   const changeCellsDensity = vi.fn();
+  const applyRegionDraft = vi.fn(() => ({ changed: 120, landCells: 90 }));
+  const cancelRegionDraft = vi.fn();
   const window = {
     parent,
     FMG_INITIALIZED: initialized,
     ThreeD: { setGlobeProjection, isGlobeReady },
+    LandmassDraw: { applyDraft: applyRegionDraft, cancelDraft: cancelRegionDraft },
     addEventListener: vi.fn((type: string, listener: (event: Record<string, unknown>) => void) => {
       listeners[type] = listener;
     }),
@@ -144,6 +147,8 @@ function loadBridge({ initialized = true }: { initialized?: boolean } = {}) {
     culturesSet,
     heightUnit,
     temperatureScale,
+    applyRegionDraft,
+    cancelRegionDraft,
     markInitialized: () => {
       window.FMG_INITIALIZED = true;
       listeners["fmg:initialized"]?.({});
@@ -172,7 +177,15 @@ describe("VTT bridge protocol", () => {
         message: {
           type: "FMG_READY",
           protocol: 2,
-          capabilities: ["view.switch", "map.generate", "map.snapshot", "map.restore", "map.title", "tools.open"]
+          capabilities: [
+            "view.switch",
+            "map.generate",
+            "map.snapshot",
+            "map.restore",
+            "map.title",
+            "tools.open",
+            "region.compose"
+          ]
         },
         origin: "*"
       }
@@ -201,7 +214,15 @@ describe("VTT bridge protocol", () => {
           sessionId,
           requestId: "connect-1",
           view: "builder",
-          capabilities: ["view.switch", "map.generate", "map.snapshot", "map.restore", "map.title", "tools.open"]
+          capabilities: [
+            "view.switch",
+            "map.generate",
+            "map.snapshot",
+            "map.restore",
+            "map.title",
+            "tools.open",
+            "region.compose"
+          ]
         },
         origin: "https://app.example"
       },
@@ -218,6 +239,42 @@ describe("VTT bridge protocol", () => {
       }
     ]);
     expect(bridge.setGlobeProjection).toHaveBeenCalledWith("world");
+  });
+
+  it("forwards freeform drafts and applies their configured recipe", () => {
+    const bridge = loadBridge();
+    const sessionId = "session-1234567890abcdef";
+    bridge.send({ type: "FMG_CONNECT", protocol: 2, sessionId });
+    bridge.emit("map:region-draft", {
+      detail: { id: "draft-1", pointCount: 20, cellCount: 350, existingLandPercent: 15 }
+    });
+    expect(bridge.posted.at(-1)?.message).toMatchObject({
+      type: "FMG_REGION_DRAFT",
+      draftId: "draft-1",
+      cellCount: 350,
+      existingLandPercent: 15
+    });
+
+    bridge.send({
+      type: "FMG_APPLY_REGION",
+      protocol: 2,
+      sessionId,
+      requestId: "region-1",
+      operation: "landmass",
+      peakHeight: 68,
+      coastFalloff: 0.35,
+      nations: 3,
+      nationShares: [20, 30, 50]
+    });
+    expect(bridge.applyRegionDraft).toHaveBeenCalledWith(
+      expect.objectContaining({ operation: "landmass", nations: 3, nationShares: [20, 30, 50] })
+    );
+    expect(bridge.posted.at(-1)?.message).toMatchObject({
+      type: "FMG_REGION_APPLIED",
+      requestId: "region-1",
+      changed: 120,
+      landCells: 90
+    });
   });
 
   it("waits for generated map data before entering Globe", () => {
