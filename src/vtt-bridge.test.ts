@@ -52,6 +52,12 @@ function loadBridge({ initialized = true }: { initialized?: boolean } = {}) {
     standard.classList.remove("pressed");
     elements.set("canvas3d", { dataset: { type: "viewGlobe" }, style: { display: "block" } });
   };
+  const emblems = { classList: createClassList(["buttonoff"]), click: () => undefined };
+  emblems.click = () => {
+    if (emblems.classList.contains("buttonoff")) emblems.classList.remove("buttonoff");
+    else emblems.classList.add("buttonoff");
+  };
+  elements.set("toggleEmblems", emblems);
 
   const document = {
     readyState: "complete",
@@ -64,6 +70,7 @@ function loadBridge({ initialized = true }: { initialized?: boolean } = {}) {
   const isGlobeReady = vi.fn(() => true);
   const regenerateMap = vi.fn();
   const applyLayersPreset = vi.fn();
+  const renderLayersPreset = vi.fn();
   const uploadMap = vi.fn();
   const lock = vi.fn();
   const unlock = vi.fn();
@@ -81,7 +88,17 @@ function loadBridge({ initialized = true }: { initialized?: boolean } = {}) {
     }),
     removeEventListener: vi.fn()
   } as Record<string, unknown>;
-  const cells = { v: [[]], h: [1], biome: [0], state: [0], province: [0], culture: [0], religion: [0], pop: [0] };
+  const cells = {
+    i: [] as number[],
+    v: [[]],
+    h: [1],
+    biome: [0],
+    state: [0],
+    province: [0],
+    culture: [0],
+    religion: [0],
+    pop: [0]
+  };
   const pack = {
     cells,
     vertices: { p: [] },
@@ -108,6 +125,7 @@ function loadBridge({ initialized = true }: { initialized?: boolean } = {}) {
     "biomesData",
     "regenerateMap",
     "applyLayersPreset",
+    "renderLayersPreset",
     "uploadMap",
     "lock",
     "unlock",
@@ -128,6 +146,7 @@ function loadBridge({ initialized = true }: { initialized?: boolean } = {}) {
     null,
     regenerateMap,
     applyLayersPreset,
+    renderLayersPreset,
     uploadMap,
     lock,
     unlock,
@@ -143,6 +162,7 @@ function loadBridge({ initialized = true }: { initialized?: boolean } = {}) {
     setGlobeProjection,
     regenerateMap,
     applyLayersPreset,
+    renderLayersPreset,
     uploadMap,
     culturesSet,
     heightUnit,
@@ -184,7 +204,8 @@ describe("VTT bridge protocol", () => {
             "map.restore",
             "map.title",
             "tools.open",
-            "region.compose"
+            "region.compose",
+            "layers.visibility"
           ]
         },
         origin: "*"
@@ -214,6 +235,7 @@ describe("VTT bridge protocol", () => {
           sessionId,
           requestId: "connect-1",
           view: "builder",
+          layers: expect.objectContaining({ emblems: false }),
           capabilities: [
             "view.switch",
             "map.generate",
@@ -221,7 +243,8 @@ describe("VTT bridge protocol", () => {
             "map.restore",
             "map.title",
             "tools.open",
-            "region.compose"
+            "region.compose",
+            "layers.visibility"
           ]
         },
         origin: "https://app.example"
@@ -269,11 +292,43 @@ describe("VTT bridge protocol", () => {
     expect(bridge.applyRegionDraft).toHaveBeenCalledWith(
       expect.objectContaining({ operation: "landmass", nations: 3, nationShares: [20, 30, 50] })
     );
+    expect(bridge.renderLayersPreset).toHaveBeenCalledWith("political");
     expect(bridge.posted.at(-1)?.message).toMatchObject({
       type: "FMG_REGION_APPLIED",
       requestId: "region-1",
       changed: 120,
       landCells: 90
+    });
+
+    bridge.pack.cells.i = [0];
+    bridge.renderLayersPreset.mockClear();
+    bridge.send({
+      type: "FMG_APPLY_REGION",
+      protocol: 2,
+      sessionId,
+      requestId: "region-2",
+      operation: "mountains"
+    });
+    expect(bridge.renderLayersPreset).not.toHaveBeenCalled();
+  });
+
+  it("toggles noisy symbol layers independently", () => {
+    const bridge = loadBridge();
+    const sessionId = "session-1234567890abcdef";
+    bridge.send({ type: "FMG_CONNECT", protocol: 2, sessionId });
+    bridge.send({
+      type: "FMG_SET_LAYER",
+      protocol: 2,
+      sessionId,
+      requestId: "layer-1",
+      layer: "emblems",
+      visible: true
+    });
+
+    expect(bridge.posted.at(-1)?.message).toMatchObject({
+      type: "FMG_LAYERS_CHANGED",
+      requestId: "layer-1",
+      layers: { emblems: true }
     });
   });
 

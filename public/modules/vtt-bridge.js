@@ -304,6 +304,50 @@
     return globe && globe.classList.contains("pressed") ? "globe" : "builder";
   }
 
+  var LAYER_CONTROLS = {
+    kingdoms: "toggleStates",
+    borders: "toggleBorders",
+    settlements: "toggleBurgIcons",
+    labels: "toggleLabels",
+    rivers: "toggleRivers",
+    routes: "toggleRoutes",
+    relief: "toggleRelief",
+    emblems: "toggleEmblems",
+    markers: "toggleMarkers",
+    military: "toggleMilitary",
+    goods: "toggleGoods",
+    markets: "toggleMarketsLayer",
+    zones: "toggleZones",
+    grid: "toggleGrid"
+  };
+
+  function getLayerVisibility() {
+    var state = {};
+    Object.keys(LAYER_CONTROLS).forEach(function (layer) {
+      var control = document.getElementById(LAYER_CONTROLS[layer]);
+      state[layer] = !!control && !control.classList.contains("buttonoff");
+    });
+    return state;
+  }
+
+  function handleSetLayer(ev, data) {
+    if (!isBoundRequest(ev, data) || !validRequestId(data.requestId)) return;
+    var controlId = LAYER_CONTROLS[data.layer];
+    if (!controlId || typeof data.visible !== "boolean") {
+      protocolError(data, "INVALID_LAYER", "Choose a supported map layer and whether it should be visible");
+      return;
+    }
+    var control = document.getElementById(controlId);
+    if (!control) {
+      protocolError(data, "LAYER_UNAVAILABLE", "That map layer is not available yet");
+      return;
+    }
+    var isVisible = !control.classList.contains("buttonoff");
+    if (isVisible !== data.visible) control.click();
+    protocolReply("FMG_LAYERS_CHANGED", data, { layers: getLayerVisibility() });
+    announceDirty();
+  }
+
   function protocolReply(type, request, extra) {
     if (!client) return;
     if (request && request.sessionId && request.sessionId !== client.sessionId) return;
@@ -519,7 +563,7 @@
       clearTimeout(timeout);
       suppressDirtyUntil = Date.now() + 1000;
       window.removeEventListener("map:generated", loaded);
-      protocolReply("FMG_MAP_LOADED", data, {});
+      protocolReply("FMG_MAP_LOADED", data, { layers: getLayerVisibility() });
     }
     window.addEventListener("map:generated", loaded);
     try {
@@ -579,9 +623,14 @@
       nations: clampInteger(data.nations, 0, 30, 0),
       nationShares: Array.isArray(data.nationShares) ? data.nationShares.slice(0, 30).map(Number) : []
     };
+    var wasBlank = typeof pack === "undefined" || !pack || !pack.cells || !pack.cells.i || !pack.cells.i.length;
     try {
       var result = window.LandmassDraw.applyDraft(options);
-      protocolReply("FMG_REGION_APPLIED", data, result);
+      // A blank embedded canvas exposes technical layers so the user has a
+      // surface to draw on. Once the first region is generated, replace that
+      // editing stack with Azgaar's canonical readable political presentation.
+      if (wasBlank && typeof renderLayersPreset === "function") renderLayersPreset("political");
+      protocolReply("FMG_REGION_APPLIED", data, Object.assign({}, result, { layers: getLayerVisibility() }));
     } catch (error) {
       protocolError(data, "REGION_GENERATION_FAILED", error && error.message ? error.message : "The region could not be generated");
     }
@@ -619,7 +668,7 @@
       clearTimeout(generationTimer);
       generationTimer = null;
       suppressDirtyUntil = Date.now() + 1000;
-      protocolReply("FMG_MAP_CREATED", request, {});
+      protocolReply("FMG_MAP_CREATED", request, { layers: getLayerVisibility() });
       return;
     }
     announceDirty();
@@ -649,7 +698,8 @@
     document.documentElement.classList.add("vtt-embedded");
     protocolReply("FMG_CONNECTED", data, {
       view: currentView(),
-      capabilities: ["view.switch", "map.generate", "map.snapshot", "map.restore", "map.title", "tools.open", "region.compose"]
+      layers: getLayerVisibility(),
+      capabilities: ["view.switch", "map.generate", "map.snapshot", "map.restore", "map.title", "tools.open", "region.compose", "layers.visibility"]
     });
   }
 
@@ -793,6 +843,7 @@
     if (d.type === "FMG_OPEN_TOOL") return handleOpenTool(ev, d);
     if (d.type === "FMG_APPLY_REGION") return handleApplyRegion(ev, d);
     if (d.type === "FMG_CANCEL_REGION") return handleCancelRegion(ev, d);
+    if (d.type === "FMG_SET_LAYER") return handleSetLayer(ev, d);
   }
 
   window.addEventListener("message", onRequest, false);
@@ -814,7 +865,7 @@
         {
           type: "FMG_READY",
           protocol: PROTOCOL_VERSION,
-          capabilities: ["view.switch", "map.generate", "map.snapshot", "map.restore", "map.title", "tools.open", "region.compose"]
+          capabilities: ["view.switch", "map.generate", "map.snapshot", "map.restore", "map.title", "tools.open", "region.compose", "layers.visibility"]
         },
         "*"
       );

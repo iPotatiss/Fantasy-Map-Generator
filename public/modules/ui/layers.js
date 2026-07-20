@@ -162,6 +162,28 @@ function applyLayersPreset(explicitPreset) {
   });
 }
 
+// Switch both the layer controls and the already-rendered map to a canonical
+// preset. Controlled embeds use this after their first hand-drawn region is
+// generated: the blank canvas starts with technical layers visible, and merely
+// changing button classes would leave those old drawings on the map.
+function renderLayersPreset(explicitPreset) {
+  const availablePresets = getDefaultPresets();
+  const preset = explicitPreset in availablePresets ? explicitPreset : "political";
+  const layers = availablePresets[preset];
+
+  ensureEl("layersPreset").value = preset;
+  ensureEl("removePresetButton").style.display = "none";
+  ensureEl("savePresetButton").style.display = "none";
+
+  document.querySelectorAll("#mapLayers > li").forEach(el => {
+    const isOn = layerIsOn(el.id);
+    const shouldBeOn = layers.includes(el.id);
+    if (isOn !== shouldBeOn) el.click();
+  });
+
+  if (ensureEl("canvas3d")) setTimeout(() => ThreeD.update(), 400);
+}
+
 function setLayersPreset(preset) {
   ensureEl("layersPreset").value = preset;
   localStorage.setItem("preset", preset);
