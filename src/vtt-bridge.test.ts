@@ -326,11 +326,24 @@ describe("VTT bridge protocol", () => {
     bridge.send({ type: "FMG_OPEN_INFLUENCE_TOOL", protocol: 2, sessionId, requestId: "influence-open" });
     expect(bridge.startInfluenceDraw).toHaveBeenCalledOnce();
 
-    bridge.emit("map:influence-draft", { detail: { id: "faith-belt", points: [[1, 2], [5, 2], [3, 8]] } });
+    bridge.emit("map:influence-draft", {
+      detail: {
+        id: "faith-belt",
+        points: [
+          [1, 2],
+          [5, 2],
+          [3, 8]
+        ]
+      }
+    });
     expect(bridge.posted.at(-1)?.message).toMatchObject({
       type: "FMG_INFLUENCE_DRAFT",
       draftId: "faith-belt",
-      points: [[1, 2], [5, 2], [3, 8]]
+      points: [
+        [1, 2],
+        [5, 2],
+        [3, 8]
+      ]
     });
 
     bridge.send({ type: "FMG_CANCEL_INFLUENCE_TOOL", protocol: 2, sessionId, requestId: "influence-cancel" });
