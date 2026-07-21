@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { distanceToPolygonEdge, pointsInsidePolygon, smoothstep01 } from "./landmass-recipe";
+import { capGeneratedHeight, distanceToPolygonEdge, pointsInsidePolygon, smoothstep01 } from "./landmass-recipe";
 
 type Point = [number, number];
 
@@ -72,5 +72,15 @@ describe("smoothstep01", () => {
   it("eases at the ends", () => {
     expect(smoothstep01(0.1)).toBeLessThan(0.1);
     expect(smoothstep01(0.9)).toBeGreaterThan(0.9);
+  });
+});
+
+describe("capGeneratedHeight", () => {
+  it("stops overlapping procedural hills exceeding the selected terrain ceiling", () => {
+    expect(capGeneratedHeight(0, 87, 48)).toBe(48);
+  });
+
+  it("does not lower pre-existing mountains when extending a landmass", () => {
+    expect(capGeneratedHeight(72, 45, 48)).toBe(72);
   });
 });

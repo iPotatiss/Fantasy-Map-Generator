@@ -54,6 +54,11 @@ export function smoothstep01(t: number): number {
   return x * x * (3 - 2 * x);
 }
 
+/** Keep overlapping procedural hills inside the terrain character's intended ceiling. */
+export function capGeneratedHeight(originalHeight: number, generatedHeight: number, peakHeight: number): number {
+  return Math.max(originalHeight, Math.min(generatedHeight, peakHeight));
+}
+
 function getBbox(polygon: Point[]): [number, number, number, number] {
   let minX = Infinity;
   let minY = Infinity;
@@ -174,7 +179,10 @@ export function generateLandmassInPolygon(polygon: Point[], options: LandmassOpt
     const s = smoothstep01(distances.get(i)! / falloff);
     let shaped = terrainOnly ? generated[i] : SHELF_HEIGHT + (generated[i] - SHELF_HEIGHT) * s;
     if (!terrainOnly && s > 0.5) shaped = Math.max(shaped, BASE_HEIGHT);
-    const value = lim(Math.max(original[i], rn(shaped)));
+    // Heightmap hills and ranges are additive. Without this cap, several
+    // overlapping rolling hills can quietly become a continent-sized alpine
+    // plateau, which then generates a broad glacier over the political map.
+    const value = lim(rn(capGeneratedHeight(original[i], shaped, peak)));
     heights[i] = value;
     if (value !== original[i]) {
       changed.push(i);
