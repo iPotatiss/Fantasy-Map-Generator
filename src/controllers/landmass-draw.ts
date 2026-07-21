@@ -171,6 +171,106 @@ function setGenerationTargets(options: RegionDraftOptions): void {
   if (growth && (options.nations || 0) > 0) growth.value = String(rn(0.35 + claimed * 0.0225, 2));
 }
 
+/**
+ * Azgaar's normal state growth is intentionally cost-limited. That is useful
+ * for a complete random world, but it makes a large hand-drawn continent miss
+ * a requested coverage target by a wide margin. After its organic generator
+ * has placed capitals and formed the first natural borders, extend only the
+ * neutral cells inside this recipe until the requested claimed share is met.
+ */
+function enforceClaimedLandCoverage(polygon: [number, number][], options: RegionDraftOptions): void {
+  if (options.operation !== "landmass" || !options.nations || !pack?.cells?.i?.length) return;
+
+  const { cells, states } = pack;
+  const selectedGridCells = new Set(pointsInsidePolygon(grid.points, polygon));
+  const selected = cells.i.filter(cell => cells.h[cell] >= 20 && selectedGridCells.has(cells.g[cell]));
+  if (!selected.length) return;
+
+  const stateIds = states.filter(state => state.i && !state.removed).map(state => state.i);
+  const stateById = new Map(states.filter(state => state.i && !state.removed).map(state => [state.i, state]));
+  if (!stateIds.length) return;
+
+  const claimedTarget = Math.ceil(
+    (selected.length * Math.max(10, Math.min(100, options.claimedLandPercent ?? 92))) / 100
+  );
+  const current = new Map(stateIds.map(state => [state, 0]));
+  selected.forEach(cell => {
+    const state = cells.state[cell];
+    if (current.has(state)) current.set(state, current.get(state)! + 1);
+  });
+
+  const requested = options.nationShares?.filter(share => Number.isFinite(share) && share > 0) ?? [];
+  const shareTotal = requested.reduce((sum, share) => sum + share, 0) || stateIds.length;
+  const targets = new Map(
+    stateIds.map((state, index) => {
+      const share = requested[index] ?? shareTotal / stateIds.length;
+      return [state, Math.max(current.get(state)!, Math.round((claimedTarget * share) / shareTotal))];
+    })
+  );
+
+  let claimed = [...current.values()].reduce((sum, amount) => sum + amount, 0);
+  const neutral = new Set(selected.filter(cell => !cells.state[cell]));
+  const chooseState = (candidates: number[]) =>
+    candidates
+      .filter(state => (current.get(state) ?? 0) < (targets.get(state) ?? 0))
+      .sort((a, b) => current.get(a)! / targets.get(a)! - current.get(b)! / targets.get(b)!)[0];
+
+  // Grow the existing Azgaar borders one cell at a time. This keeps coastlines
+  // and the generator's original shapes, rather than replacing them with a
+  // hard geometric Voronoi split.
+  while (neutral.size && claimed < claimedTarget) {
+    let assigned = 0;
+    for (const cell of [...neutral]) {
+      const bordering = [
+        ...new Set(cells.c[cell].map(neighbor => cells.state[neighbor]).filter(state => current.has(state)))
+      ];
+      const state = chooseState(bordering);
+      if (!state) continue;
+      cells.state[cell] = state;
+      current.set(state, current.get(state)! + 1);
+      neutral.delete(cell);
+      claimed++;
+      assigned++;
+      if (claimed >= claimedTarget) break;
+    }
+
+    if (assigned) continue;
+
+    // Separate islands may have no border to grow from. Seed the closest
+    // under-target realm, then let the same natural growth loop fill it.
+    const state = chooseState(stateIds);
+    if (!state) break;
+    const stateData = stateById.get(state);
+    if (!stateData) break;
+    const center = cells.p[stateData.center];
+    let nearest: number | undefined;
+    let distance = Infinity;
+    for (const cell of neutral) {
+      const point = cells.p[cell];
+      const d = (point[0] - center[0]) ** 2 + (point[1] - center[1]) ** 2;
+      if (d < distance) {
+        distance = d;
+        nearest = cell;
+      }
+    }
+    if (nearest === undefined) break;
+    cells.state[nearest] = state;
+    current.set(state, current.get(state)! + 1);
+    neutral.delete(nearest);
+    claimed++;
+  }
+
+  pack.burgs.forEach(burg => {
+    if (burg.i && !burg.removed) burg.state = cells.state[burg.cell];
+  });
+  States.collectStatistics();
+  States.getPoles();
+  States.findNeighbors();
+  const renderer = window as any;
+  if (typeof renderer.drawStates === "function") renderer.drawStates();
+  if (typeof renderer.drawBorders === "function") renderer.drawBorders();
+}
+
 function applyDraft(options: RegionDraftOptions): { changed: number; landCells: number } {
   if (!draftPolygon) throw new Error("Draw a freeform region first");
   if (customization !== 1) {
@@ -179,8 +279,9 @@ function applyDraft(options: RegionDraftOptions): { changed: number; landCells: 
   }
   if (customization !== 1 || !heightmapEditorContext)
     throw new Error("The terrain editor could not prepare this region");
+  const polygon = draftPolygon;
   setGenerationTargets(options);
-  const result = generateLandmassInPolygon(draftPolygon, options);
+  const result = generateLandmassInPolygon(polygon, options);
   if (!result)
     throw new Error(options.operation === "lake" ? "Draw over a larger area of land" : "Draw a larger region");
   heightmapEditorContext?.mockHeightmapSelection(result.changed);
@@ -191,6 +292,7 @@ function applyDraft(options: RegionDraftOptions): { changed: number; landCells: 
   const finalize = document.getElementById("finalizeHeightmap") as HTMLButtonElement | null;
   if (!finalize) throw new Error("The terrain editor could not be finalized");
   finalize.click();
+  enforceClaimedLandCoverage(polygon, options);
   const detail = { changed: result.changed.length, landCells: result.landCells };
   window.dispatchEvent(new CustomEvent("map:region-applied", { detail }));
   tip("Region generated. Draw another area whenever you want to refine it", false, "success", 4000);
